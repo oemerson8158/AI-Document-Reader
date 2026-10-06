@@ -1,0 +1,859 @@
+/* AI Document Reader Styles */
+/* Oliver Emerson - 2025-2026 */
+
+/* Reset + base typography */
+body {
+  margin: 0;
+  padding: 0;
+  font-family: Arial, sans-serif;
+  background-color: #f7f7f7;
+  color: #333;
+}
+
+/***************************************************************************
+ * LOGIN SCREEN
+ ***************************************************************************/
+
+#login-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding: 20px;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  padding: 30px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  box-sizing: border-box;
+}
+
+.auth-card h1 {
+  text-align: center;
+  margin: 0 0 24px;
+  font-size: 1.4em;
+}
+
+.auth-card input {
+  width: 100%;
+  padding: 10px;
+  font-size: 16px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-sizing: border-box;
+  margin-bottom: 16px;
+}
+
+.auth-submit {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.auth-error {
+  background: #fdecec;
+  border: 1px solid #f3b8b8;
+  color: #8a2b2b;
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 0.9em;
+  margin: 0 0 16px;
+}
+
+.auth-toggle {
+  text-align: center;
+  font-size: 0.9em;
+  color: #555;
+  margin: 14px 0 0;
+}
+
+.auth-toggle a {
+  color: #0078d4;
+  text-decoration: none;
+  font-weight: bold;
+}
+
+.auth-toggle a:hover {
+  text-decoration: underline;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  color: #999;
+  font-size: 0.85em;
+  margin: 20px 0;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  border-bottom: 1px solid #ddd;
+}
+
+.auth-divider span {
+  padding: 0 10px;
+}
+
+.auth-google {
+  width: 100%;
+}
+
+/***************************************************************************
+ * HOME SCREEN
+ ***************************************************************************/
+
+#home-screen {
+  max-width: 800px;
+  margin: 40px auto;
+  padding: 0 20px;
+  box-sizing: border-box;
+}
+
+.home-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  gap: 12px;
+}
+
+.home-header h1 {
+  margin: 0;
+  font-size: 1.5em;
+}
+
+.home-header-actions {
+  display: flex;
+  gap: 10px;
+}
+
+#home-document-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.home-doc-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.home-doc-item:hover {
+  border-color: #0078d4;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+}
+
+.home-doc-title {
+  font-weight: bold;
+  margin: 0 0 4px;
+}
+
+.home-doc-meta {
+  font-size: 0.85em;
+  color: #666;
+  margin: 0;
+}
+
+/***************************************************************************
+ * UPLOAD SCREEN
+ ***************************************************************************/
+
+/* Upload Screen Container */
+#upload-screen {
+  max-width: 800px;
+  margin: 40px auto;
+  padding: 20px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+/* Title */
+#upload-screen h1 {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+/* Document Input */
+#document-input {
+  width: 100%;
+  height: 300px;
+  padding: 10px;
+  font-size: 16px;
+  resize: vertical;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-sizing: border-box;
+  margin-bottom: 20px;
+}
+
+/* Dropdown Label */
+label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: bold;
+}
+
+/* Purpose Dropdown */
+#purpose-select {
+  width: 100%;
+  padding: 10px;
+  font-size: 16px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  margin-bottom: 20px;
+  box-sizing: border-box;
+}
+
+/* Analysis Focus Dropdown (shown only when Analysis is selected) */
+#analysis-type-container {
+  margin-bottom: 20px;
+}
+
+#analysis-type-select {
+  width: 100%;
+  padding: 10px;
+  font-size: 16px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+
+/* File Upload */
+#file-input {
+  margin-bottom: 20px;
+}
+
+/* Start Reading Button */
+#start-reading {
+  width: 100%;
+  padding: 12px;
+  font-size: 18px;
+  background-color: #0078d4;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+#start-reading:hover {
+  background-color: #005fa3;
+}
+
+/***************************************************************************
+ * SHARED SIDEBAR TOKENS
+ *  Reusable button and text styles so every sidebar tab (Provocations,
+ *  Lenses, Annotations) matches the look already established by Rephrase.
+ ***************************************************************************/
+
+.btn-primary {
+  height: 42px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  background-color: #0078d4;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-primary:hover {
+  background-color: #005fa3;
+}
+
+.btn-primary:disabled {
+  background-color: #a8cdea;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  height: 42px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  background-color: #eee;
+  color: #333;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-secondary:hover {
+  background-color: #ddd;
+}
+
+.btn-secondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Small subdued label above a group of content, e.g. "Existing Lenses" */
+.section-heading {
+  font-size: 0.85em;
+  font-weight: 700;
+  color: #555;
+  margin: 18px 0 10px;
+}
+
+/* Instructional/status copy under a tab's top controls */
+.tool-hint {
+  font-size: 0.9em;
+  color: #666;
+  margin: 0 0 14px;
+  line-height: 1.4;
+}
+
+/***************************************************************************
+ * READER SCREEN
+ ***************************************************************************/
+
+#reader-screen {
+  display: flex;
+  height: 100vh;
+}
+
+/* Left Pane */
+#document-pane {
+  width: 60%;
+  padding: 20px;
+  overflow-y: scroll;
+  background: #fafafa;
+}
+
+/* Paragraphs */
+#document-pane p {
+  margin-bottom: 1rem;
+  line-height: 1.5;
+  position: relative;
+  /* Base/fallback gutter, sized for the common 0-1 icon case. Actual width
+     is set per-paragraph, dynamically, by layoutParagraphIcons() in app.js —
+     it only grows this wider on paragraphs that genuinely have multiple
+     stacked icons (notes/provocations/bookmarks). */
+  padding-right: 24px;
+}
+
+/* Right Pane */
+#tool-pane {
+  width: 40%;
+  border-left: 1px solid #ccc;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* Back to Documents / Save row */
+#reader-header-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+/* Tabs */
+#tool-tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+#tool-tabs button {
+  flex: 1;
+  padding: 10px;
+  cursor: pointer;
+  border: 1px solid #ccc;
+  background: #eee;
+  border-radius: 4px;
+}
+
+#tool-tabs button.active {
+  background: #0078d4;
+  color: white;
+}
+
+/* Tool Content Area */
+#tool-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Annotation Tools */
+#annotation-tools {
+  display: none;
+  margin-bottom: 20px;
+}
+
+/* Button row — grid, not flex. Two columns of minmax(0, 1fr) means the row
+   is always split into exactly two equal halves by the track definition
+   itself, with no content-based minimum width for either side to fight
+   against. This is what makes Unhighlight reliably match Bookmark/Add Note. */
+.button-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+#annotation-tools button {
+  cursor: pointer;
+  width: 100%;
+}
+
+/* Row pairing the highlight color swatch with the Highlight/Unhighlight
+   buttons. .highlight-controls occupies the row's left grid column (same
+   width as the Bookmark/Add Note columns below); inside it, a small flex
+   layout splits that column between the fixed-size swatch and Highlight. */
+.highlight-row .highlight-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.highlight-row .lens-color-picker {
+  flex: 0 0 42px;
+}
+
+.highlight-row .highlight-controls #btn-highlight {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+/* Highlight styling */
+.highlighted {
+  background-color: yellow;
+}
+
+/* NOTE INPUT BOX */
+
+#note-input-container {
+  display: none;
+  flex-direction: column;
+  margin-top: 10px;
+}
+
+#note-input {
+  width: 100%;
+  height: 60px;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+
+/* SUBMIT + CANCEL ROW */
+
+.submit-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.submit-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  background-color: #0078d4;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.submit-btn:hover {
+  background-color: #005fa3;
+}
+
+.cancel-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  background-color: #ccc;
+  color: black;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.cancel-btn:hover {
+  background-color: #bbb;
+}
+
+/* NOTE ICONS */
+
+.note-icon {
+  position: absolute;
+  cursor: pointer;
+  font-size: 16px;
+  user-select: none;
+  right: 0;
+}
+
+/* NOTE POPUP */
+
+#note-popup {
+  position: absolute;
+  background: white;
+  border: 1px solid #ccc;
+  padding: 10px;
+  width: 220px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+  border-radius: 6px;
+  z-index: 999;
+  display: none;
+}
+
+#note-popup-text {
+  font-size: 14px;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.note-popup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.note-popup-actions button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px;
+  line-height: 1;
+}
+
+.note-popup-actions button:hover {
+  opacity: 0.7;
+}
+
+/* BOOKMARK TOOL */
+
+#bookmark-input-container {
+  display: none;
+  flex-direction: column;
+  margin-top: 10px;
+}
+
+#bookmark-input {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+
+#bookmark-list {
+  margin-top: 15px;
+}
+
+#bookmark-toggle {
+  width: 100%;
+  padding: 8px;
+  cursor: pointer;
+  border: 1px solid #ccc;
+  background: #eee;
+  border-radius: 4px;
+  text-align: left;
+}
+
+#bookmark-toggle:hover {
+  background: #ddd;
+}
+
+#bookmark-items {
+  display: none;
+  margin-top: 8px;
+}
+
+#bookmark-items button {
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border: none;
+  background: #f0f0f0;
+  margin-bottom: 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#bookmark-items button:hover {
+  background: #e0e0e0;
+}
+
+/* BOOKMARK POPUP */
+
+#bookmark-popup {
+  position: absolute;
+  background: white;
+  border: 1px solid #ccc;
+  padding: 10px;
+  width: 220px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+  border-radius: 6px;
+  z-index: 999;
+  display: none;
+}
+
+#bookmark-popup-text {
+  font-size: 14px;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.bookmark-popup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.bookmark-popup-actions button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px;
+  line-height: 1;
+}
+
+.bookmark-popup-actions button:hover {
+  opacity: 0.7;
+}
+
+/* Bookmark icon */
+.bookmark-icon {
+  position: absolute;
+  cursor: pointer;
+  font-size: 16px;
+  user-select: none;
+  right: 0;
+}
+
+/* REPHRASE OUTPUT BOX */
+
+.output-box {
+  width: 100%;
+  min-height: 120px;
+  padding: 14px;
+  border: 2px solid #999;
+  border-radius: 8px;
+  background: #fafafa;
+  resize: none;
+  font-size: 15px;
+  line-height: 1.6;
+  box-sizing: border-box;
+  outline: none;
+  margin-top: 15px;
+  overflow: hidden;
+}
+
+.rephrase-top-row {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.rephrase-top-row select {
+  flex: 1;
+  padding: 10px;
+  font-size: 15px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+
+.rephrase-top-row button {
+  padding: 10px 14px;
+  font-size: 15px;
+  background-color: #0078d4;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.rephrase-top-row button:hover {
+  background-color: #005fa3;
+}
+
+/***************************************************************************
+ * PROVOCATIONS TOOL
+ ***************************************************************************/
+
+.prov-card {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fafafa;
+}
+
+.prov-question {
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+
+#prov-detail textarea {
+  width: 100%;
+  min-height: 70px;
+  padding: 10px;
+  font-size: 15px;
+  font-family: inherit;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-sizing: border-box;
+  resize: vertical;
+  margin-bottom: 10px;
+}
+
+#prov-feedback {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+#prov-feedback:empty {
+  display: none;
+}
+
+#prov-feedback.correct {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 6px;
+  background: #eaf7e6;
+  border: 1px solid #b7ff8f;
+  color: #2f6b23;
+}
+
+#prov-feedback.incorrect {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 6px;
+  background: #fdecec;
+  border: 1px solid #f3b8b8;
+  color: #8a2b2b;
+}
+
+.prov-include-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 0.85em;
+  color: #555;
+  cursor: pointer;
+}
+
+.prov-include-summary input {
+  cursor: pointer;
+}
+
+/***************************************************************************
+ * ANNOTATIONS SUMMARY TOOL
+ ***************************************************************************/
+
+.summary-card {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fafafa;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+/***************************************************************************
+ * LENS TOOL (NEW)
+ ***************************************************************************/
+
+.lens-top-row {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.lens-input {
+  flex: 2;
+  padding: 10px;
+  font-size: 15px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+
+.lens-color-picker {
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+}
+
+.lens-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #f0f0f0;
+  padding: 8px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+
+.lens-label {
+  flex: 1;
+  font-size: 15px;
+}
+
+.lens-color-edit {
+  width: 36px;
+  height: 36px;
+  border: none;
+  cursor: pointer;
+}
+
+.lens-apply,
+.lens-delete {
+  padding: 6px 10px;
+  font-size: 13px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.lens-apply {
+  background-color: #0078d4;
+  color: white;
+}
+
+.lens-apply:hover {
+  background-color: #005fa3;
+}
+
+.lens-delete {
+  background-color: #ccc;
+  color: black;
+}
+
+.lens-delete:hover {
+  background-color: #bbb;
+}

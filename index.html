@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>AI Document Reader</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <div id="login-screen">
+        <div class="auth-card">
+            <h1>AI Document Reader</h1>
+
+            <p id="auth-error" class="auth-error" style="display:none;"></p>
+
+            <label for="auth-email">Email</label>
+            <input type="email" id="auth-email" placeholder="you@example.com">
+
+            <label for="auth-password">Password</label>
+            <input type="password" id="auth-password" placeholder="At least 6 characters">
+
+            <button id="auth-submit" class="btn-primary auth-submit">Sign In</button>
+
+            <p class="auth-toggle">
+                <span id="auth-toggle-text">Don't have an account?</span>
+                <a href="#" id="auth-toggle-link">Create one</a>
+            </p>
+
+            <div class="auth-divider"><span>or</span></div>
+
+            <button id="auth-google" class="btn-secondary auth-google">Continue with Google</button>
+        </div>
+    </div>
+
+    <div id="home-screen" style="display:none;">
+        <div class="home-header">
+            <h1>Your Documents</h1>
+            <div class="home-header-actions">
+                <button id="home-new-document" class="btn-primary">+ New Document</button>
+                <button id="home-sign-out" class="btn-secondary">Sign Out</button>
+            </div>
+        </div>
+        <div id="home-document-list"></div>
+    </div>
+
+    <div id="upload-screen" style="display:none;">
+        <h1>AI Document Reader</h1>
+
+        <textarea id="document-input" placeholder="Paste your document here..."></textarea>
+
+        <label for="purpose-select">Reading Purpose:</label>
+        <select id="purpose-select">
+            <option value="analysis">Analysis</option>
+            <option value="memorize">Memorize</option>
+        </select>
+
+        <div id="analysis-type-container">
+            <label for="analysis-type-select">Analysis Focus:</label>
+            <select id="analysis-type-select">
+                <option value="literary">Literary Analysis</option>
+                <option value="textual">Textual Analysis</option>
+                <option value="rhetorical">Rhetorical Analysis</option>
+                <option value="purpose">Purpose Analysis</option>
+                <option value="research">Research Analysis</option>
+            </select>
+        </div>
+
+        <label for="file-input">Or upload a .txt, .pdf, or .docx file:</label>
+        <input type="file" id="file-input" accept=".txt,.pdf,.docx">
+        <p id="file-upload-status" class="tool-hint" style="margin-top: 8px;"></p>
+
+        <button id="start-reading">Start Reading</button>
+    </div>
+
+    <div id="reader-screen" style="display:none;">
+
+        <!-- Left: Document Viewer -->
+        <div id="document-pane"></div>
+
+        <!-- Right: Sidebar -->
+        <div id="tool-pane">
+
+            <div id="reader-header-row">
+                <button id="back-to-documents" class="btn-secondary">← Documents</button>
+                <button id="save-document" class="btn-primary">Save</button>
+            </div>
+            <p id="save-status" class="tool-hint" style="margin:0 0 12px;"></p>
+
+            <div id="tool-tabs">
+                <button data-tab="provocations">Provocations</button>
+                <button data-tab="rephrase">Rephrase</button>
+                <button data-tab="lenses">Lenses</button>
+                <button data-tab="annotations">Annotations</button>
+            </div>
+
+            <div id="annotation-tools">
+
+                <!-- Highlight Color / Highlight / Unhighlight Row -->
+                <div class="button-row highlight-row">
+                    <div class="highlight-controls">
+                        <input id="highlight-color" type="color" value="#ffff00" class="lens-color-picker" title="Highlight color">
+                        <button id="btn-highlight" class="btn-primary">Highlight</button>
+                    </div>
+                    <button id="btn-unhighlight" class="btn-secondary">Unhighlight</button>
+                </div>
+
+                <!-- Bookmark / Add Note Row -->
+                <div class="button-row">
+                    <button id="btn-bookmark" class="btn-primary">Bookmark</button>
+                    <button id="btn-add-note" class="btn-primary">Add Note</button>
+                </div>
+
+                <!-- Bookmark Input Box -->
+                <div id="bookmark-input-container" style="display:none; flex-direction:column; margin-top:10px;">
+                    <input id="bookmark-input" type="text" placeholder="Bookmark name..."
+                        style="padding:8px; border:1px solid #ccc; border-radius:6px; box-sizing:border-box;">
+
+                    <div class="submit-row">
+                        <button id="bookmark-cancel" class="cancel-btn">Cancel</button>
+                        <button id="bookmark-submit" class="submit-btn">Enter</button>
+                    </div>
+                </div>
+
+                <!-- Bookmark List -->
+                <div id="bookmark-list" style="margin-top:15px;">
+                    <button id="bookmark-toggle" style="margin-bottom:8px;">Bookmarks ▼</button>
+                    <div id="bookmark-items" style="display:none;"></div>
+                </div>
+
+                <!-- Note Input Box -->
+                <div id="note-input-container" style="display:none; flex-direction:column;">
+                    <textarea id="note-input" placeholder="Type your note..."></textarea>
+
+                    <div class="submit-row">
+                        <button id="note-cancel" class="cancel-btn">Cancel</button>
+                        <button id="note-submit" class="submit-btn">Enter</button>
+                    </div>
+                </div>
+
+            </div>
+
+            <div id="tool-content">
+                <!-- Phase 6–8 modules will render here -->
+            </div>
+
+        </div>
+
+    </div>
+
+    <!-- Note Popup -->
+    <div id="note-popup" style="display:none;">
+        <div id="note-popup-text"></div>
+        <div class="note-popup-actions">
+            <button id="note-edit">✏️</button>
+            <button id="note-delete">🗑️</button>
+            <button id="note-close">✖️</button>
+        </div>
+    </div>
+
+    <!-- Bookmark Popup -->
+    <div id="bookmark-popup" style="display:none;">
+        <div id="bookmark-popup-text"></div>
+        <div class="bookmark-popup-actions">
+            <button id="bookmark-edit">✏️</button>
+            <button id="bookmark-delete">🗑️</button>
+            <button id="bookmark-close">✖️</button>
+        </div>
+    </div>
+
+
+    <!-- PDF text extraction (pdf.js) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script>
+      // pdf.js needs a matching worker script; point it at the same
+      // pinned CDN version so they never drift out of sync.
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
+    </script>
+
+    <!-- DOCX text extraction (mammoth.js) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.12.3/mammoth.browser.min.js"></script>
+
+    <script type="module" src="app.js"></script>
+</body>
+
+</html>
