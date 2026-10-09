@@ -16,7 +16,13 @@ console.log("APP.JS LOADED");
 //Imports functions from various files in modules
 import { addAnnotation, createBookmark, loadAnnotationsUI } from "./modules/annotations.js";
 import { initRephraseUI } from "./modules/rephrase.js";
-import { initLensUI } from "./modules/lens.js";
+import {
+  initLensUI,
+  normalizeLens,
+  refreshLensMinimap,
+  handleDocumentPaneClick,
+  lensHitStyle
+} from "./modules/lens.js";
 import { loadProvocationsUI } from "./modules/provocations.js";
 import {
   onAuthChange,
@@ -57,7 +63,8 @@ const state = {
   annotationsSummary: null,
   provocations: [],
   lenses: [],
-  lensMatches: [],
+  activeLensId: null,      // id of the lens currently applied to the reader, if any
+  lensCurrentHitId: null,  // id of the hit last navigated to (for Previous/Next)
   rephrased: [],
   rephrase: {
     selectedParagraphIds: [],
@@ -305,8 +312,9 @@ async function openExistingDocument(docId) {
   state.annotations = record.annotations || [];
   state.annotationsSummary = record.annotationsSummary || null;
   state.provocations = record.provocations || [];
-  state.lenses = record.lenses || [];
-  state.lensMatches = [];
+  state.lenses = (record.lenses || []).map(normalizeLens);
+  state.activeLensId = null;
+  state.lensCurrentHitId = null;
 
   renderDocument();
   setupTabs();
@@ -407,6 +415,17 @@ syncAnalysisTypeVisibility(); // set correct initial state on page load
 //    provocations, annotations, and rephrasing.
 ///////////////////////////////////////////////////////////////////////////
 function loadDocument(text, purpose, analysisType) {
+  // Start from a clean slate: without this, annotations, lenses, and
+  // provocations from whichever document was open before would carry over
+  // into this new one (and get saved into it).
+  state.currentDocId = null;
+  state.annotations = [];
+  state.annotationsSummary = null;
+  state.provocations = [];
+  state.lenses = [];
+  state.activeLensId = null;
+  state.lensCurrentHitId = null;
+
   state.documentText = text;
   state.purpose = purpose;
   state.analysisType = purpose === "analysis" ? (analysisType || "literary") : "literary";
@@ -444,6 +463,70 @@ function getParagraph(id) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
+//  Function: escapeHtml
+//  Summary: Document text is untrusted (it can contain "<" or "&"), so it
+//    has to be escaped before being placed into innerHTML.
+///////////////////////////////////////////////////////////////////////////
+function escapeHtml(str) {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: buildParagraphHtml
+//  Inputs: text (the paragraph's text), highlights (the student's yellow-
+//    pen annotations), lensHits (hits from the applied lens), lens (the
+//    applied lens, for its color)
+//  Outputs: An HTML string for the paragraph
+//  Summary: Highlights and lens hits can overlap in any way, so rather
+//    than trying to nest them by hand, this cuts the text at every
+//    boundary any of them has, and styles each resulting piece according
+//    to whichever highlight and/or lens hit covers it. The lens shading is
+//    the outer span and the student's highlight the inner one, so both
+//    stay visible where they overlap.
+///////////////////////////////////////////////////////////////////////////
+function buildParagraphHtml(text, highlights, lensHits, lens) {
+  const len = text.length;
+  const clamp = n => Math.max(0, Math.min(len, n));
+
+  const points = new Set([0, len]);
+  highlights.forEach(h => { points.add(clamp(h.startOffset)); points.add(clamp(h.endOffset)); });
+  lensHits.forEach(h => { points.add(clamp(h.startOffset)); points.add(clamp(h.endOffset)); });
+  const cuts = Array.from(points).sort((a, b) => a - b);
+
+  let html = "";
+
+  for (let i = 0; i < cuts.length - 1; i++) {
+    const a = cuts[i];
+    const b = cuts[i + 1];
+    if (b <= a) continue;
+
+    let piece = escapeHtml(text.slice(a, b));
+
+    const highlight = highlights.find(h => h.startOffset <= a && h.endOffset >= b);
+    if (highlight) {
+      const color = highlight.color || "#ffff00";
+      piece = `<span class="highlighted" style="background-color:${color};">${piece}</span>`;
+    }
+
+    // If lens hits overlap, a strong one wins over a partial one.
+    const covering = lensHits.filter(h => h.startOffset <= a && h.endOffset >= b);
+    const hit = covering.find(h => h.strength === "strong") || covering[0];
+    if (hit && lens) {
+      const current = hit.id === state.lensCurrentHitId ? " lens-hit-current" : "";
+      piece = `<span class="lens-hit${current}" data-hit-id="${hit.id}" style="${lensHitStyle(lens.color, hit.strength)}">${piece}</span>`;
+    }
+
+    html += piece;
+  }
+
+  return html;
+}
+
+///////////////////////////////////////////////////////////////////////////
 //  Function: renderDocument
 //  Inputs: None
 //  Outputs: Renders all paragraph chunks into #document-pane as <p> tags
@@ -457,67 +540,29 @@ function renderDocument() {
   const pane = document.getElementById("document-pane");
   pane.innerHTML = "";
 
-  const activeMatchesRaw = state.lensMatches || [];
-  const activeMatches = activeMatchesRaw.map(m => Number(m));
+  const activeLens = state.lenses.find(l => l.id === state.activeLensId) || null;
 
   state.chunks.forEach(chunk => {
     const p = document.createElement("p");
     p.dataset.id = chunk.id;
 
     // -----------------------------
-    // 1. Annotation highlights
+    // 1 + 2. Annotation highlights and lens hits
+    //  Both are drawn as spans over the paragraph's text. If a paragraph
+    //  has neither, it stays plain text.
     // -----------------------------
     const highlights = state.annotations
       .filter(a => a.paragraphId === chunk.id && a.type === "highlight")
       .sort((a, b) => a.startOffset - b.startOffset);
 
-    if (highlights.length === 0) {
+    const lensHits = activeLens
+      ? activeLens.hits.filter(h => h.paragraphId === chunk.id)
+      : [];
+
+    if (highlights.length === 0 && lensHits.length === 0) {
       p.textContent = chunk.text;
     } else {
-      const merged = [];
-      highlights.forEach(h => {
-        if (merged.length === 0) {
-          merged.push({ ...h });
-        } else {
-          const last = merged[merged.length - 1];
-          if (h.startOffset <= last.endOffset) {
-            last.endOffset = Math.max(last.endOffset, h.endOffset);
-          } else {
-            merged.push({ ...h });
-          }
-        }
-      });
-
-      let html = "";
-      let pos = 0;
-
-      merged.forEach(h => {
-        const highlightColor = h.color || "#ffff00";
-        html += chunk.text.slice(pos, h.startOffset);
-        html += `<span class="highlighted" style="background-color:${highlightColor};">${chunk.text.slice(h.startOffset, h.endOffset)}</span>`;
-        pos = h.endOffset;
-      });
-
-      html += chunk.text.slice(pos);
-      p.innerHTML = html;
-    }
-
-    // -----------------------------
-    // 2. Lens highlighting
-    // -----------------------------
-    if (activeMatches.includes(chunk.id)) {
-      const activeLens = state.lenses.find(
-        l => l.matches.map(m => Number(m)).includes(chunk.id)
-      );
-      const color = activeLens?.color || "#ffff99";
-
-      p.style.backgroundColor = color;
-      p.style.borderLeft = `4px solid ${color}`;
-      p.style.paddingLeft = "";
-    } else {
-      p.style.backgroundColor = "";
-      p.style.borderLeft = "";
-      p.style.paddingLeft = "";
+      p.innerHTML = buildParagraphHtml(chunk.text, highlights, lensHits, activeLens);
     }
 
     // -----------------------------
@@ -657,6 +702,11 @@ function layoutParagraphIcons() {
     const neededWidth = icons.length * ICON_STEP_PX + 4;
     p.style.paddingRight = `${Math.max(BASE_GUTTER_PX, neededWidth)}px`;
   });
+
+  // Changing the gutters can change how paragraphs wrap, which moves
+  // where every lens hit sits on the page — so the lens minimap is
+  // refreshed here, after layout has settled.
+  refreshLensMinimap();
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -782,14 +832,7 @@ content.innerHTML = `
 }
 
 function loadLensesUI() {
-  initLensUI({
-    getState: () => state,
-    addLens,
-    updateLensColor,
-    deleteLens,
-    renderDocument  
-  });
-
+  initLensUI();
 }
 
 
@@ -985,37 +1028,8 @@ function showNotePopup(note, iconElement) {
   popup.style.display = "block";
 }
 
-//LENS FUNCTIONS
-
-function addLens(keywords, matches, color) {
-  state.lenses.push({
-    id: crypto.randomUUID(),
-    keywords,
-    matches: matches.map(m => Number(m)),   
-    color
-  });
-
-  renderDocument();   
-}
-
-function updateLensColor(id, newColor) {
-  const lens = state.lenses.find(l => l.id === id);
-  if (lens) {
-    lens.color = newColor;
-    renderDocument();
-  }
-}
-
-function deleteLens(id) {
-  // Remove the lens
-  state.lenses = state.lenses.filter(l => l.id !== id);
-
-  // If the deleted lens was active, clear lensMatches
-  state.lensMatches = [];
-
-  renderDocument();
-  loadLensesUI();
-}
+//LENS FUNCTIONS live in modules/lens.js now (creating, applying, navigating,
+//and deleting lenses all happen there).
 
 //MISCELLANEOUS FUNCTIONS
 
@@ -1350,6 +1364,9 @@ document.getElementById("note-close").addEventListener("click", () => {
 // ADDITIONAL EVENT LISTENERS
 
 // Captures text selection when the user releases the mouse button
+// Clicking a highlighted lens sentence shows why it matched.
+document.getElementById("document-pane").addEventListener("click", handleDocumentPaneClick);
+
 document.getElementById("document-pane").addEventListener("mouseup", () => {
   if (state.chunks.length === 0) return;  // Safety
   captureSelection();
@@ -1663,4 +1680,10 @@ document.getElementById("start-reading").addEventListener("click", async () => {
   await createDocumentAndEnterReader(text, purpose, analysisType);
 });
 
-export { state, renderDocument };
+// Lets other modules (e.g. lens.js's "Add selection") read what the
+// student currently has selected in the document.
+function getCurrentSelections() {
+  return currentSelections;
+}
+
+export { state, renderDocument, getCurrentSelections };
