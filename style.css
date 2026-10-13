@@ -901,6 +901,15 @@ label {
   color: #8a5a00;
 }
 
+/* Shown on a lens that only covers part of the reading (still being built,
+   or stopped / interrupted before every section was checked) */
+.lens-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #8a5a00;
+  line-height: 1.4;
+}
+
 /* Previous / Next / Add selection panel, shown under the applied lens */
 .lens-nav {
   display: flex;

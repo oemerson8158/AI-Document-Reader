@@ -25,8 +25,7 @@
 ///////////////////////////////////////////////////////////////////////////
 
 import { state, renderDocument, getCurrentSelections } from "../app.js";
-
-const WORKER_LENS_URL = "https://plain-band-2d43.oemerson8158.workers.dev/lens";
+import { splitIntoSections, requestWithRetry } from "./worker-sections.js";
 
 ///////////////////////////////////////////////////////////////////////////
 // Shared helpers
@@ -158,52 +157,89 @@ function normalizeLens(lens) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-// Talking to the worker
+// Creating a lens
+//
+//  A long reading can't go to the AI in one request (see
+//  worker-sections.js), so it's checked one section at a time, with the
+//  app waiting out the AI's per-minute limit between sections. The lens
+//  appears as soon as the first section is done, and its hits fill in as
+//  the rest finish, so the student can start reading with it right away.
+//  Stop keeps whatever has been found so far (the lens is then marked as
+//  covering only part of the reading).
 ///////////////////////////////////////////////////////////////////////////
 
-async function requestLens(query) {
-  const sentenceSpans = state.chunks.map(c => splitSentences(c.text));
-  const sentences = state.chunks.map((c, i) =>
-    sentenceSpans[i].map(sp => c.text.slice(sp.start, sp.end))
-  );
+// Roughly how much text goes to the AI per request. (The worker turns away
+// a section a good deal bigger than this.)
+const LENS_SECTION_MAX_CHARS = 6500;
 
-  let response;
-  try {
-    response = await fetch(WORKER_LENS_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, sentences })
-    });
-  } catch (err) {
-    console.error("LENS: network error:", err);
-    return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+// Lives at module level (not inside the tab's UI) so a lens keeps being
+// built, and the tab shows the right state, if the student switches tabs
+// and back.
+const lensRun = {
+  running: false,
+  cancelRequested: false,
+  currentLensId: null, // the lens being filled in right now
+  text: "",            // status line shown under the Create Lens row
+  kind: "",            // "", "error", or "warn"
+  forChunks: null      // which document that status belongs to
+};
+
+function paintLensStatus() {
+  const el = document.getElementById("lens-status");
+  if (!el) return; // Lenses tab isn't currently open
+  el.textContent = lensRun.text;
+  el.className = "lens-status" + (lensRun.kind ? ` lens-status-${lensRun.kind}` : "");
+}
+
+function setLensStatus(message, kind) {
+  lensRun.text = message || "";
+  lensRun.kind = kind || "";
+  paintLensStatus();
+}
+
+function syncLensButton() {
+  const btn = document.getElementById("lens-submit");
+  if (!btn) return;
+
+  if (lensRun.running) {
+    btn.textContent = lensRun.cancelRequested ? "Stopping..." : "Stop";
+    btn.className = "btn-secondary";
+    btn.disabled = lensRun.cancelRequested;
+  } else {
+    btn.textContent = "Create Lens";
+    btn.className = "btn-primary";
+    btn.disabled = false;
   }
+}
 
-  let data;
-  try {
-    data = await response.json();
-  } catch (err) {
-    console.error("LENS: worker returned non-JSON:", err);
-    return { ok: false, error: "The server sent back something unexpected. Try again." };
-  }
+// Ask the worker which sentences in one section engage the lens, and turn
+// its answer into hits with character offsets.
+async function requestLensSection({ query, section, sentenceSpans, skipCorrection, label, ctx }) {
+  const sentences = section.paragraphs.map((_, k) => {
+    const idx = section.startIndex + k;
+    const text = state.chunks[idx].text;
+    return sentenceSpans[idx].map(sp => text.slice(sp.start, sp.end));
+  });
 
-  if (!response.ok || data.error) {
-    console.error("LENS: worker error:", data.error || data);
-    return {
-      ok: false,
-      error: typeof data.error === "string"
-        ? data.error
-        : "Couldn't create that lens right now. Try again in a moment."
-    };
-  }
+  const result = await requestWithRetry({
+    path: "/lens",
+    body: { query, sentences, startIndex: section.startIndex, skipCorrection },
+    label,
+    ...ctx,
+    setStatus: setLensStatus,
+    fallbackMessage: "Couldn't check this part of the reading right now. Try again in a moment."
+  });
 
+  if (!result.ok) return result; // cancelled, too long, or failed
+
+  const data = result.data;
   if (!Array.isArray(data.hits)) {
     console.error("LENS: invalid worker response shape:", data);
-    return { ok: false, error: "The server sent back something unexpected. Try again." };
+    return { ok: false, message: "The server sent back something unexpected. Try again." };
   }
 
   // The worker answers in [paragraph index, sentence index] pairs. Map
-  // those back to character offsets with the same split used above.
+  // those back to character offsets with the same split used to send them.
   const hits = [];
   data.hits.forEach(h => {
     const chunk = state.chunks[h.p];
@@ -224,23 +260,13 @@ async function requestLens(query) {
   return {
     ok: true,
     query: typeof data.query === "string" && data.query.trim() ? data.query.trim() : query,
-    hits,
-    incomplete: !!data.incomplete
+    hits
   };
 }
 
 ///////////////////////////////////////////////////////////////////////////
 // Sidebar UI
 ///////////////////////////////////////////////////////////////////////////
-
-let lensRequestInFlight = false;
-
-function setLensStatus(message, kind) {
-  const el = document.getElementById("lens-status");
-  if (!el) return; // Lenses tab isn't currently open
-  el.textContent = message || "";
-  el.className = "lens-status" + (kind ? ` lens-status-${kind}` : "");
-}
 
 function initLensUI() {
   const content = document.getElementById("tool-content");
@@ -257,67 +283,153 @@ function initLensUI() {
     <div id="lens-list"></div>
   `;
 
-  document.getElementById("lens-submit").addEventListener("click", handleCreateLens);
-  document.getElementById("lens-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") handleCreateLens();
+  // A status message left over from a different document shouldn't show here.
+  if (!lensRun.running && lensRun.forChunks !== state.chunks) {
+    lensRun.text = "";
+    lensRun.kind = "";
+  }
+
+  // The button starts a lens, and turns into "Stop" while one is being built.
+  document.getElementById("lens-submit").addEventListener("click", () => {
+    if (lensRun.running) {
+      lensRun.cancelRequested = true;
+      syncLensButton();
+      return;
+    }
+    handleCreateLens();
   });
 
+  document.getElementById("lens-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !lensRun.running) handleCreateLens();
+  });
+
+  syncLensButton();
+  paintLensStatus();
   renderLensList();
 }
 
 async function handleCreateLens() {
-  if (lensRequestInFlight) return;
+  if (lensRun.running) return;
 
   const input = document.getElementById("lens-input");
   const colorInput = document.getElementById("lens-color");
-  const submitBtn = document.getElementById("lens-submit");
-  if (!input || !colorInput || !submitBtn) return;
+  if (!input || !colorInput) return;
 
   const query = input.value.trim();
   if (!query || state.chunks.length === 0) return;
+  const color = colorInput.value;
 
-  lensRequestInFlight = true;
-  submitBtn.disabled = true;
-  const originalLabel = submitBtn.textContent;
-  submitBtn.textContent = "Reading...";
-  setLensStatus("Finding the passages that bear on this lens...");
+  const startedWith = state.chunks;
+  const sentenceSpans = startedWith.map(c => splitSentences(c.text));
+  const sections = splitIntoSections(startedWith, LENS_SECTION_MAX_CHARS);
 
-  const result = await requestLens(query);
+  let lens = null; // created once the first section comes back
+  const isStale = () => state.chunks !== startedWith;
+  const shouldStop = () =>
+    lensRun.cancelRequested ||
+    isStale() ||
+    (lens !== null && !state.lenses.includes(lens)); // the student deleted it mid-run
+  const ctx = { isStale, shouldStop };
 
-  lensRequestInFlight = false;
-  submitBtn.disabled = false;
-  submitBtn.textContent = originalLabel;
+  lensRun.running = true;
+  lensRun.cancelRequested = false;
+  lensRun.currentLensId = null;
+  lensRun.forChunks = startedWith;
+  syncLensButton();
 
-  if (!result.ok) {
-    setLensStatus(result.error, "error");
+  let lensQuery = query;
+  let checked = 0;
+  let skipped = 0;
+  let failure = null;
+  let stopped = false;
+
+  try {
+    for (let i = 0; i < sections.length; i++) {
+      if (shouldStop()) { stopped = true; break; }
+
+      const label = sections.length > 1 ? `Reading section ${i + 1} of ${sections.length}...` : "Reading...";
+      setLensStatus(
+        sections.length > 1 && i === 0
+          ? `${label} A long reading takes a few minutes because of the AI's per-minute limit.`
+          : label
+      );
+
+      const result = await requestLensSection({
+        query: lensQuery,
+        section: sections[i],
+        sentenceSpans,
+        skipCorrection: lens !== null, // the lens's name only needs its spelling fixed once
+        label,
+        ctx
+      });
+
+      if (result.cancelled) { stopped = true; break; }
+      if (result.tooLong) { skipped++; continue; }
+      if (!result.ok) { failure = result.message; break; }
+
+      if (!lens) {
+        lensQuery = result.query;
+        lens = {
+          id: crypto.randomUUID(),
+          query: lensQuery,
+          color,
+          hits: [],
+          incomplete: true // until every section has been checked
+        };
+        state.lenses.push(lens);
+        state.activeLensId = lens.id; // show the new lens straight away
+        state.lensCurrentHitId = null;
+        lensRun.currentLensId = lens.id;
+        input.value = "";
+      }
+
+      lens.hits.push(...result.hits);
+      checked++;
+      renderDocument(); // show this section's hits right away
+      renderLensList();
+    }
+  } finally {
+    lensRun.running = false;
+    lensRun.cancelRequested = false;
+    lensRun.currentLensId = null;
+  }
+
+  // Only a run that checked every section gets to call itself complete.
+  if (lens && !stopped && !failure && skipped === 0) lens.incomplete = false;
+
+  syncLensButton();
+
+  // If another document was opened meanwhile, or the student deleted the
+  // lens while it was being built, there's nothing to report — just clear
+  // the progress text rather than leave it behind.
+  const lensDeleted = lens !== null && !state.lenses.includes(lens);
+  if (isStale() || lensDeleted) {
+    setLensStatus("");
     return;
   }
 
-  const lens = {
-    id: crypto.randomUUID(),
-    query: result.query,
-    color: colorInput.value,
-    hits: result.hits
-  };
-
-  state.lenses.push(lens);
-  state.activeLensId = lens.id; // show the new lens straight away
-  state.lensCurrentHitId = null;
-  input.value = "";
-
-  renderDocument();
   renderLensList();
 
-  let message;
-  if (lens.hits.length === 0) {
-    message = "No passages stood out for this lens. You can still select text in the document and add it yourself.";
+  const n = lens ? lens.hits.length : 0;
+  const passages = `${n} passage${n === 1 ? "" : "s"}`;
+  const covered = `The lens covers ${checked} of ${sections.length} section${sections.length === 1 ? "" : "s"} of the reading (${passages} found).`;
+  const note = skipped > 0
+    ? ` ${skipped} section${skipped === 1 ? " was" : "s were"} too large to read and skipped.`
+    : "";
+
+  if (failure && !lens) {
+    setLensStatus(failure, "error");
+  } else if (failure) {
+    setLensStatus(`${failure} ${covered}${note}`, "warn");
+  } else if (stopped) {
+    setLensStatus(lens ? `Stopped. ${covered}${note}` : "Stopped.", "warn");
+  } else if (!lens) {
+    setLensStatus("None of the reading could be checked against this lens.", "error");
+  } else if (n === 0) {
+    setLensStatus(`No passages stood out for this lens. You can still select text in the document and add it yourself.${note}`, note ? "warn" : "");
   } else {
-    message = `Found ${lens.hits.length} passage${lens.hits.length === 1 ? "" : "s"}. Click a highlighted sentence to see why it matched.`;
+    setLensStatus(`Found ${passages}. Click a highlighted sentence to see why it matched.${note}`, note ? "warn" : "");
   }
-  if (result.incomplete) {
-    message += " Part of the document couldn't be checked, so delete this lens and create it again to cover everything.";
-  }
-  setLensStatus(message, result.incomplete ? "warn" : "");
 }
 
 function renderLensList() {
@@ -390,6 +502,15 @@ function renderLensList() {
 
     main.append(label, colorEl, applyBtn, deleteBtn);
     item.appendChild(main);
+
+    if (lens.incomplete) {
+      const note = document.createElement("div");
+      note.className = "lens-note";
+      note.textContent = lensRun.running && lensRun.currentLensId === lens.id
+        ? "Still reading the rest of the document..."
+        : "Only part of the reading was checked for this lens.";
+      item.appendChild(note);
+    }
 
     // ---- Navigation panel, only for the applied lens ----
     if (active) {

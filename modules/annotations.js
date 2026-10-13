@@ -131,7 +131,13 @@ function loadAnnotationsUI() {
 
       if (!response.ok || data.error) {
         console.error("SUMMARIZE: worker error:", data.error || data);
-        outputEl.innerHTML = `<p style="color:#b00;">Couldn't generate a summary right now. Try again in a moment.</p>`;
+        outputEl.innerHTML = "";
+        const errorP = document.createElement("p");
+        errorP.style.color = "#b00";
+        errorP.textContent = typeof data.message === "string"
+          ? data.message
+          : "Couldn't generate a summary right now. Try again in a moment.";
+        outputEl.appendChild(errorP);
         return;
       }
     } catch (err) {

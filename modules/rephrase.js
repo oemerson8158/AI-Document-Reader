@@ -74,6 +74,13 @@ async function runRephrase({ paragraphs, lexile, includeExample }) {
     return "";
   }
 
+  // The worker writes a plain-English `message` for problems the student can
+  // act on (selection too long, AI busy). Show it in the output box rather
+  // than leaving it blank.
+  if (data && typeof data.message === "string") {
+    return data.message;
+  }
+
   if (!data || typeof data.result !== "string") {
     console.error("REPHRASE: INVALID WORKER RESULT FORMAT:", data);
     return "";
