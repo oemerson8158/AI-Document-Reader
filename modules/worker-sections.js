@@ -116,23 +116,41 @@ export async function requestWithRetry({
 
     if (response.ok && !data.error) return { ok: true, data };
 
+    // Hitting the AI's per-minute limit is expected, and handled by waiting,
+    // so it's logged quietly. Anything else is a real problem and gets the
+    // full error treatment. (The browser still prints its own red line for
+    // any non-200 response; that can't be turned off.)
+    const wait = Number(data.retryAfterSeconds) || 60;
+    const willWait =
+      data.error === "rate_limited" &&
+      attempt < MAX_ATTEMPTS_PER_SECTION &&
+      wait <= MAX_WAIT_SECONDS;
+
+    if (willWait) {
+      console.info(`${path}: the AI is at its per-minute limit. Waiting ${wait}s, then retrying (attempt ${attempt} of ${MAX_ATTEMPTS_PER_SECTION}).`);
+
+      const finished = await waitWithCountdown(
+        wait + 1,
+        secs => `${label} Waiting ${secs}s for the AI's per-minute limit to reset...`,
+        shouldStop,
+        setStatus
+      );
+      if (!finished) return { cancelled: true };
+      continue;
+    }
+
+    // The AI occasionally gives an answer that can't be read (cut off, or
+    // not in the expected format). That's random rather than a sign the
+    // section is bad, so just ask again.
+    if (data.error === "unreadable_response" && attempt < MAX_ATTEMPTS_PER_SECTION) {
+      console.warn(`${path}: the AI's answer couldn't be read; trying this section again (attempt ${attempt} of ${MAX_ATTEMPTS_PER_SECTION}).`);
+      setStatus(`${label} Retrying...`);
+      continue;
+    }
+
     console.error(`${path}: worker error:`, data.error || data);
     if (data.details) console.error(`${path}: details from worker:`, data.details);
     if (data.raw) console.error(`${path}: raw model output that failed to parse:`, data.raw);
-
-    if (data.error === "rate_limited") {
-      const wait = Number(data.retryAfterSeconds) || 60;
-      if (attempt < MAX_ATTEMPTS_PER_SECTION && wait <= MAX_WAIT_SECONDS) {
-        const finished = await waitWithCountdown(
-          wait + 1,
-          secs => `${label} Waiting ${secs}s for the AI's per-minute limit to reset...`,
-          shouldStop,
-          setStatus
-        );
-        if (!finished) return { cancelled: true };
-        continue;
-      }
-    }
 
     // One section that's too big for a single request (e.g. one enormous
     // paragraph) is skipped by the caller rather than failing the whole run.
