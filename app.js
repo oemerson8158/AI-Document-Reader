@@ -1,5 +1,3 @@
-console.log("APP.JS LOADED");
-
 ///////////////////////////////////////////////////////////////////////////
 // AI Document Reader
 //  This project implements an interactive reading and analysis tool
@@ -163,6 +161,10 @@ function friendlyAuthErrorMessage(err) {
       return "Password should be at least 6 characters.";
     case "auth/popup-closed-by-user":
       return "Google sign-in was closed before finishing.";
+    case "auth/too-many-requests":
+      return "Too many attempts. Wait a moment and try again.";
+    case "auth/network-request-failed":
+      return "Couldn't reach the server. Check your connection and try again.";
     default:
       return "Something went wrong signing in. Please try again.";
   }
@@ -316,8 +318,10 @@ async function openExistingDocument(docId) {
   state.activeLensId = null;
   state.lensCurrentHitId = null;
 
+  resetTransientState();
+  resetReaderView();
   renderDocument();
-  setupTabs();
+  renderBookmarkList();
   showScreen("reader");
 }
 
@@ -335,6 +339,7 @@ async function saveCurrentDocument() {
   const statusEl = document.getElementById("save-status");
   const saveBtn = document.getElementById("save-document");
   saveBtn.disabled = true;
+  statusEl.style.color = "";
   statusEl.textContent = "Saving...";
 
   try {
@@ -425,6 +430,7 @@ function loadDocument(text, purpose, analysisType) {
   state.lenses = [];
   state.activeLensId = null;
   state.lensCurrentHitId = null;
+  resetTransientState();
 
   state.documentText = text;
   state.purpose = purpose;
@@ -536,8 +542,8 @@ function buildParagraphHtml(text, highlights, lensHits, lens) {
 //    element with a data-id attribute.
 ///////////////////////////////////////////////////////////////////////////
 function renderDocument() {
-  console.log("RENDERDOCUMENT VERSION: 2.1");
   const pane = document.getElementById("document-pane");
+  const savedScroll = pane.scrollTop; // rebuilding the pane resets scrolling; restored at the end
   pane.innerHTML = "";
 
   const activeLens = state.lenses.find(l => l.id === state.activeLensId) || null;
@@ -594,34 +600,6 @@ function renderDocument() {
         showNotePopup(note, icon);
       });
 
-      const range = document.createRange();
-      let walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
-      let currentNode = walker.nextNode();
-      let remainingOffset = note.startOffset;
-
-      while (currentNode && remainingOffset > currentNode.length) {
-        remainingOffset -= currentNode.length;
-        currentNode = walker.nextNode();
-      }
-
-      let topOffset;
-
-      if (currentNode) {
-        range.setStart(currentNode, remainingOffset);
-        range.setEnd(currentNode, remainingOffset);
-
-        const rect = range.getBoundingClientRect();
-        topOffset = rect.top;
-      } else {
-        topOffset = p.getBoundingClientRect().top;
-      }
-
-      const pRect = p.getBoundingClientRect();
-
-      icon.style.position = "absolute";
-      icon.style.right = "0px";
-      icon.style.top = `${topOffset - pRect.top}px`;
-
       p.appendChild(icon);
     });
 
@@ -657,6 +635,7 @@ function renderDocument() {
   });
 
   renderBookmarkIcons();
+  pane.scrollTop = savedScroll;
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -762,6 +741,45 @@ function setupTabs() {
 
     });
   });
+}
+
+// The tab buttons are static HTML, so their listeners are attached exactly
+// once, at startup. (Calling this every time a document was opened stacked
+// duplicate listeners, so each tab click ran its loader several times.)
+setupTabs();
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: resetReaderView
+//  Summary: Puts the reader's chrome back to a blank starting point when a
+//    document is opened: no active tab, empty sidebar content, annotation
+//    tools hidden, popups closed, and the document scrolled to the top.
+///////////////////////////////////////////////////////////////////////////
+function resetReaderView() {
+  document.querySelectorAll("#tool-tabs button").forEach(t => t.classList.remove("active"));
+  document.getElementById("tool-content").innerHTML = "";
+  document.getElementById("annotation-tools").style.display = "none";
+  document.getElementById("note-popup").style.display = "none";
+  document.getElementById("bookmark-popup").style.display = "none";
+  document.getElementById("save-status").textContent = "";
+  document.getElementById("document-pane").scrollTop = 0;
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: resetTransientState
+//  Summary: Clears per-document working state (the current text selection
+//    and the Rephrase tool's draft) so nothing from the previously open
+//    document can leak into a newly opened one.
+///////////////////////////////////////////////////////////////////////////
+function resetTransientState() {
+  currentSelections = [];
+  state.rephrase = {
+    selectedParagraphIds: [],
+    selectedText: "",
+    paragraphs: [],
+    lexile: null,
+    includeExample: false,
+    result: ""
+  };
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -1016,7 +1034,7 @@ function showNotePopup(note, iconElement) {
   }
 
   // Vertical: icon's top relative to sidebar
-  const topOffset = iconRect.top - sidebarRect.top;
+  const topOffset = iconRect.top - sidebarRect.top + sidebar.scrollTop;
 
   // Horizontal: 5px from sidebar's left edge
   const leftOffset = 5;
@@ -1090,14 +1108,22 @@ function captureSelection() {
       offset += length;
     }
 
+    // Measure against the paragraph's real text: the DOM text also contains
+    // the note/bookmark/provocation icon emoji appended to the paragraph.
+    const paragraphId = parseInt(p.dataset.id, 10);
+    const chunkText = getParagraph(paragraphId)?.text ?? p.textContent;
+
     if (startOffset === null) startOffset = 0;
-    if (endOffset === null) endOffset = p.textContent.length;
+    if (endOffset === null) endOffset = chunkText.length;
+    startOffset = Math.min(startOffset, chunkText.length);
+    endOffset = Math.min(endOffset, chunkText.length);
+    if (endOffset <= startOffset) return; // selection only touched an icon
 
     currentSelections.push({
-      paragraphId: parseInt(p.dataset.id, 10),
+      paragraphId,
       startOffset,
       endOffset,
-      text: p.textContent.slice(startOffset, endOffset)
+      text: chunkText.slice(startOffset, endOffset)
     });
   });
 
@@ -1292,52 +1318,57 @@ document.getElementById("btn-add-note").addEventListener("click", () => {
   // Only one of Bookmark/Note input should be open at a time
   document.getElementById("bookmark-input-container").style.display = "none";
 
+  delete document.getElementById("note-input-container").dataset.editingId;
   document.getElementById("note-input-container").style.display = "flex";
   document.getElementById("note-input").value = "";
 });
 
-// Submit Note button (enter button)
+// Submit Note button (enter button). Handles both creating a new note and
+// saving an edit to an existing one, depending on whether editingId is set.
 document.getElementById("note-submit").addEventListener("click", () => {
+  const container = document.getElementById("note-input-container");
   const noteText = document.getElementById("note-input").value.trim();
   if (!noteText) {
     return;
   }
 
-  // Attach note ONLY to the first selected paragraph
-  const firstSelection = currentSelections[0];
-  if (firstSelection) {
-    addAnnotation("note", firstSelection, { noteText });
+  if (container.dataset.editingId) {
+    const note = state.annotations.find(a => a.id === container.dataset.editingId);
+    if (note) note.noteText = noteText;
+    delete container.dataset.editingId;
   } else {
+    // Attach note ONLY to the first selected paragraph
+    const firstSelection = currentSelections[0];
+    if (firstSelection) {
+      addAnnotation("note", firstSelection, { noteText });
+    }
   }
 
-  document.getElementById("note-input-container").style.display = "none";
+  container.style.display = "none";
   renderDocument();
 });
 
 // Cancel Note button
 document.getElementById("note-cancel").addEventListener("click", () => {
+  const container = document.getElementById("note-input-container");
   document.getElementById("note-input").value = "";
-  document.getElementById("note-input-container").style.display = "none";
+  delete container.dataset.editingId;
+  container.style.display = "none";
 });
 
 
 // Edit Note button
 document.getElementById("note-edit").addEventListener("click", () => {
   const popup = document.getElementById("note-popup");
-  const noteId = popup.dataset.noteId;
+  const note = state.annotations.find(a => a.id === popup.dataset.noteId);
+  if (!note) return;
 
-  const note = state.annotations.find(a => a.id === noteId);
-
-  document.getElementById("note-input-container").style.display = "flex";
+  const container = document.getElementById("note-input-container");
+  container.dataset.editingId = note.id;
+  container.style.display = "flex";
   document.getElementById("note-input").value = note.noteText;
 
   popup.style.display = "none";
-
-  document.getElementById("note-submit").onclick = () => {
-    note.noteText = document.getElementById("note-input").value.trim();
-    renderDocument();
-    document.getElementById("note-input-container").style.display = "none";
-  };
 });
 
 // Delete Note button
@@ -1611,8 +1642,9 @@ async function createDocumentAndEnterReader(text, purpose, analysisType) {
     alert("Couldn't save this as a new document, but you can still read it — Save may not work until this is resolved.");
   }
 
+  resetReaderView();
   renderDocument();
-  setupTabs();
+  renderBookmarkList();
   showScreen("reader");
 }
 

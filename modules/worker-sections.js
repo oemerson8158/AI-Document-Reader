@@ -17,6 +17,7 @@ const WORKER_BASE_URL = "https://plain-band-2d43.oemerson8158.workers.dev";
 
 const MAX_ATTEMPTS_PER_SECTION = 3;
 const MAX_WAIT_SECONDS = 90; // longest single wait we'll sit through for the AI's limit
+const MAX_RATE_LIMIT_WAITS = 6; // how many times one section will wait out the limit before giving up
 
 ///////////////////////////////////////////////////////////////////////////
 //  Function: splitIntoSections
@@ -84,7 +85,7 @@ async function waitWithCountdown(seconds, buildText, shouldStop, setStatus) {
 //  Summary: Sends one section. If the AI reports it's at its per-minute
 //    limit, waits the time it asks for (with a countdown) and tries again.
 ///////////////////////////////////////////////////////////////////////////
-export async function requestWithRetry({
+async function sendWithRetry({
   path,
   body,
   label,
@@ -93,6 +94,10 @@ export async function requestWithRetry({
   setStatus,
   fallbackMessage = "Couldn't reach the AI right now. Try again in a moment."
 }) {
+  // Waiting out the per-minute limit is expected and is counted separately
+  // from real failures, so it doesn't use up the section's attempts.
+  let rateLimitWaits = 0;
+
   for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_SECTION; attempt++) {
     if (shouldStop()) return { cancelled: true };
 
@@ -123,11 +128,11 @@ export async function requestWithRetry({
     const wait = Number(data.retryAfterSeconds) || 60;
     const willWait =
       data.error === "rate_limited" &&
-      attempt < MAX_ATTEMPTS_PER_SECTION &&
+      rateLimitWaits < MAX_RATE_LIMIT_WAITS &&
       wait <= MAX_WAIT_SECONDS;
 
     if (willWait) {
-      console.info(`${path}: the AI is at its per-minute limit. Waiting ${wait}s, then retrying (attempt ${attempt} of ${MAX_ATTEMPTS_PER_SECTION}).`);
+      console.info(`${path}: the AI is at its per-minute limit. Waiting ${wait}s, then retrying (wait ${rateLimitWaits + 1} of ${MAX_RATE_LIMIT_WAITS}).`);
 
       const finished = await waitWithCountdown(
         wait + 1,
@@ -136,6 +141,8 @@ export async function requestWithRetry({
         setStatus
       );
       if (!finished) return { cancelled: true };
+      rateLimitWaits++;
+      attempt--; // this wasn't a failed attempt
       continue;
     }
 
@@ -158,9 +165,62 @@ export async function requestWithRetry({
 
     return {
       ok: false,
-      message: typeof data.message === "string" ? data.message : fallbackMessage
+      message: typeof data.message === "string" ? data.message : fallbackMessage,
+      // How long the worker said to wait, when the failure was the rate limit
+      // (so the caller can hold off retrying for that long).
+      retryAfterSeconds: data.error === "rate_limited" ? wait : undefined
     };
   }
 
   return { ok: false, message: "The AI stayed busy. Wait a minute and try again." };
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Request queue
+//  Provocations and lenses share the same per-minute AI budget, so if two of
+//  them ran at once they would keep rate-limiting each other. Every request
+//  goes through this one queue and is sent only when the one before it has
+//  finished (including any waiting it had to do). Pressing Stop (or opening
+//  another document) still takes effect while a request is waiting its turn.
+///////////////////////////////////////////////////////////////////////////
+
+let queueTail = Promise.resolve();
+let activeRequests = 0; // running + waiting
+
+function waitForTurn(previous, shouldStop) {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      resolve(value);
+    };
+    const poll = setInterval(() => { if (shouldStop()) finish(false); }, 500);
+    previous.then(() => finish(true));
+  });
+}
+
+// Same inputs and outputs as sendWithRetry (documented above); this is the
+// function the tools call.
+export async function requestWithRetry(options) {
+  const previous = queueTail;
+  let release;
+  queueTail = new Promise(resolve => { release = resolve; });
+
+  if (activeRequests > 0) {
+    options.setStatus(`${options.label} Waiting for another AI task to finish...`);
+  }
+  activeRequests++;
+
+  try {
+    const myTurn = await waitForTurn(previous, options.shouldStop);
+    if (!myTurn) return { cancelled: true };
+    return await sendWithRetry(options);
+  } finally {
+    activeRequests--;
+    // Only let the next request go once the one ahead of this has finished,
+    // even if this one gave up while still waiting.
+    previous.then(release);
+  }
 }

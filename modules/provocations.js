@@ -85,7 +85,7 @@ function renderDetail(prov) {
 
   detailEl.innerHTML = `
     <div class="prov-card">
-      <p class="prov-question"><strong>Question:</strong> ${prov.question}</p>
+      <p class="prov-question"><strong>Question:</strong> ${escapeHtml(prov.question)}</p>
       <textarea id="prov-answer" rows="3">${prov.answer ? escapeHtml(prov.answer) : ""}</textarea>
       <div class="submit-row" style="justify-content: flex-start;">
         <button id="prov-submit" class="btn-primary">${alreadyAnswered ? "Submit new answer" : "Submit answer"}</button>
@@ -123,6 +123,7 @@ function renderDetail(prov) {
     const originalLabel = submitBtn.textContent;
     submitBtn.textContent = "Checking...";
     feedbackEl.className = "";
+    feedbackEl.style.color = "";
     feedbackEl.textContent = "";
 
     let data;

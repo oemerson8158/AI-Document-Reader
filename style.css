@@ -329,11 +329,13 @@ label {
 #reader-screen {
   display: flex;
   height: 100vh;
+  height: 100dvh; /* accounts for mobile browser toolbars where supported */
 }
 
 /* Left Pane */
 #document-pane {
   width: 60%;
+  box-sizing: border-box;
   padding: 20px;
   overflow-y: scroll;
   background: #fafafa;
@@ -354,6 +356,8 @@ label {
 /* Right Pane */
 #tool-pane {
   width: 40%;
+  box-sizing: border-box;
+  overflow-y: auto; /* scrolls as a whole if the annotation tools plus content don't fit */
   border-left: 1px solid #ccc;
   padding: 20px;
   display: flex;
@@ -393,6 +397,7 @@ label {
 /* Tool Content Area */
 #tool-content {
   flex: 1;
+  min-height: 220px; /* never squeezed to nothing by the annotation tools above it */
   overflow-y: auto;
 }
 
@@ -415,6 +420,12 @@ label {
 
 #annotation-tools button {
   cursor: pointer;
+}
+
+/* Full-width buttons only; the small Enter/Cancel buttons keep their own size. */
+#annotation-tools .button-row button,
+#annotation-tools #bookmark-toggle,
+#annotation-tools #bookmark-items button {
   width: 100%;
 }
 
@@ -501,7 +512,8 @@ label {
 
 /* NOTE ICONS */
 
-.note-icon {
+.note-icon,
+.provocation-icon {
   position: absolute;
   cursor: pointer;
   font-size: 16px;
@@ -678,6 +690,7 @@ label {
 
 .rephrase-top-row select {
   flex: 1;
+  min-width: 0;
   padding: 10px;
   font-size: 15px;
   border: 1px solid #ccc;
@@ -795,6 +808,8 @@ label {
 
 .lens-input {
   flex: 2;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 10px;
   font-size: 15px;
   border: 1px solid #ccc;
@@ -908,6 +923,27 @@ label {
   font-size: 12px;
   color: #8a5a00;
   line-height: 1.4;
+}
+
+/* "Check the rest" button on a lens that only covers part of the reading */
+.lens-resume {
+  margin-top: 8px;
+  padding: 5px 12px;
+  font-size: 13px;
+  border: none;
+  border-radius: 4px;
+  background: #0078d4;
+  color: white;
+  cursor: pointer;
+}
+
+.lens-resume:hover:not(:disabled) {
+  background: #005fa3;
+}
+
+.lens-resume:disabled {
+  background: #a8cdea;
+  cursor: not-allowed;
 }
 
 /* Previous / Next / Add selection panel, shown under the applied lens */
@@ -1074,4 +1110,45 @@ label {
 
 .lens-popup-close:hover {
   background: #ccc;
+}
+
+/***************************************************************************
+ * ACCESSIBILITY + SMALL SCREENS
+ ***************************************************************************/
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #0078d4;
+  outline-offset: 2px;
+}
+
+.rephrase-top-row button:disabled {
+  background-color: #a8cdea;
+  cursor: not-allowed;
+}
+
+@media (max-width: 800px) {
+  #reader-screen {
+    flex-direction: column;
+  }
+
+  #document-pane {
+    width: auto;
+    flex: 1 1 55%;
+    min-height: 0;
+  }
+
+  #tool-pane {
+    width: auto;
+    flex: 1 1 45%;
+    min-height: 0;
+    border-left: none;
+    border-top: 1px solid #ccc;
+  }
+
+  #lens-minimap {
+    display: none;
+  }
 }

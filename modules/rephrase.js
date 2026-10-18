@@ -23,8 +23,24 @@ function initRephraseUI({ getState, setResult }) {
       ? state.rephrase.paragraphs
       : [];
 
-    const result = await runRephrase({ paragraphs, lexile, includeExample });
-    setResult(result);
+    if (paragraphs.length === 0) {
+      setResult("Select some text in the document first, then click Rephrase.");
+      return;
+    }
+
+    // One request at a time: rapid clicks would each spend part of the
+    // AI's shared per-minute budget.
+    submitBtn.disabled = true;
+    const originalLabel = submitBtn.textContent;
+    submitBtn.textContent = "Rephrasing...";
+
+    try {
+      const result = await runRephrase({ paragraphs, lexile, includeExample });
+      setResult(result || "Couldn't rephrase that right now. Check your connection and try again.");
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = originalLabel;
+    }
   });
 }
 

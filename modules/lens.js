@@ -308,6 +308,40 @@ function initLensUI() {
   renderLensList();
 }
 
+///////////////////////////////////////////////////////////////////////////
+// "Check the rest" cooldown
+//  When a run gives up because the AI is at its per-minute limit, the worker
+//  says how long until it frees up. The button stays disabled, with a
+//  countdown, for exactly that long (it varies), so pressing it again can't
+//  just earn another rate-limit error.
+///////////////////////////////////////////////////////////////////////////
+
+let resumeCooldownUntil = 0; // timestamp (ms) when the button can be used again
+let cooldownTimer = null;
+
+function cooldownSecondsLeft() {
+  return Math.max(0, Math.ceil((resumeCooldownUntil - Date.now()) / 1000));
+}
+
+function applyResumeCooldown(btn) {
+  const left = cooldownSecondsLeft();
+  btn.disabled = left > 0;
+  btn.textContent = left > 0 ? `Check the rest (wait ${left}s)` : "Check the rest";
+}
+
+function tickResumeCooldown() {
+  document.querySelectorAll(".lens-resume").forEach(applyResumeCooldown);
+  if (cooldownSecondsLeft() === 0 && cooldownTimer) {
+    clearInterval(cooldownTimer);
+    cooldownTimer = null;
+  }
+}
+
+function startResumeCooldown(seconds) {
+  resumeCooldownUntil = Date.now() + Math.ceil(seconds) * 1000;
+  if (!cooldownTimer) cooldownTimer = setInterval(tickResumeCooldown, 1000);
+}
+
 async function handleCreateLens() {
   if (lensRun.running) return;
 
@@ -317,13 +351,40 @@ async function handleCreateLens() {
 
   const query = input.value.trim();
   if (!query || state.chunks.length === 0) return;
-  const color = colorInput.value;
 
+  await runLens({ lens: null, query, color: colorInput.value, from: 0 });
+}
+
+// Continues a lens that stopped before every section was checked (Stop, an
+// error, or the AI staying busy) from the paragraph where it left off.
+// `resumeFrom` is saved with the lens; a lens saved by an older version has
+// none, so it is re-checked from the start (hits already found are kept, not
+// duplicated).
+async function resumeLens(lens) {
+  if (lensRun.running || state.chunks.length === 0) return;
+  if (cooldownSecondsLeft() > 0) return; // still waiting out the AI's limit
+  if (!state.lenses.includes(lens)) return;
+
+  const from = Number.isInteger(lens.resumeFrom) ? lens.resumeFrom : 0;
+  await runLens({ lens, query: lens.query, color: lens.color, from });
+}
+
+// Checks the reading, from paragraph `from` onward, one section at a time.
+// With lens: null it builds a brand-new lens (created once the first section
+// comes back); with an existing lens it adds to that one.
+async function runLens({ lens: existingLens, query, color, from }) {
   const startedWith = state.chunks;
+  const total = startedWith.length;
   const sentenceSpans = startedWith.map(c => splitSentences(c.text));
-  const sections = splitIntoSections(startedWith, LENS_SECTION_MAX_CHARS);
+  const sections = splitIntoSections(startedWith.slice(from), LENS_SECTION_MAX_CHARS)
+    .map(section => ({ ...section, startIndex: section.startIndex + from }));
 
-  let lens = null; // created once the first section comes back
+  if (sections.length === 0) {
+    setLensStatus("There's nothing left to check for this lens.");
+    return;
+  }
+
+  let lens = existingLens;
   const isStale = () => state.chunks !== startedWith;
   const shouldStop = () =>
     lensRun.cancelRequested ||
@@ -331,23 +392,33 @@ async function handleCreateLens() {
     (lens !== null && !state.lenses.includes(lens)); // the student deleted it mid-run
   const ctx = { isStale, shouldStop };
 
+  if (lens) {
+    lens.incomplete = true;
+    if (!Number.isInteger(lens.resumeFrom)) lens.resumeFrom = from;
+  }
+
   lensRun.running = true;
   lensRun.cancelRequested = false;
-  lensRun.currentLensId = null;
+  lensRun.currentLensId = lens ? lens.id : null;
   lensRun.forChunks = startedWith;
   syncLensButton();
+  renderLensList();
+
+  const noun = from > 0 ? "remaining section" : "section";
+  // Where the next unchecked section begins (the end of the reading, if none).
+  const nextStart = i => (sections[i + 1] ? sections[i + 1].startIndex : total);
 
   let lensQuery = query;
-  let checked = 0;
   let skipped = 0;
   let failure = null;
+  let failureWait = null; // seconds the worker asked us to wait, if the failure was the rate limit
   let stopped = false;
 
   try {
     for (let i = 0; i < sections.length; i++) {
       if (shouldStop()) { stopped = true; break; }
 
-      const label = sections.length > 1 ? `Reading section ${i + 1} of ${sections.length}...` : "Reading...";
+      const label = sections.length > 1 ? `Reading ${noun} ${i + 1} of ${sections.length}...` : "Reading...";
       setLensStatus(
         sections.length > 1 && i === 0
           ? `${label} A long reading takes a few minutes because of the AI's per-minute limit.`
@@ -364,8 +435,16 @@ async function handleCreateLens() {
       });
 
       if (result.cancelled) { stopped = true; break; }
-      if (result.tooLong) { skipped++; continue; }
-      if (!result.ok) { failure = result.message; break; }
+      if (result.tooLong) {
+        skipped++;
+        if (lens) lens.resumeFrom = nextStart(i); // retrying it would only fail again
+        continue;
+      }
+      if (!result.ok) {
+        failure = result.message;
+        failureWait = result.retryAfterSeconds || null;
+        break;
+      }
 
       if (!lens) {
         lensQuery = result.query;
@@ -380,11 +459,19 @@ async function handleCreateLens() {
         state.activeLensId = lens.id; // show the new lens straight away
         state.lensCurrentHitId = null;
         lensRun.currentLensId = lens.id;
-        input.value = "";
+        const input = document.getElementById("lens-input");
+        if (input) input.value = "";
       }
 
-      lens.hits.push(...result.hits);
-      checked++;
+      // Skip any sentence the lens already has (only matters when a lens
+      // saved without resume information is re-checked from the start).
+      const fresh = result.hits.filter(h => !lens.hits.some(e =>
+        e.paragraphId === h.paragraphId &&
+        e.startOffset === h.startOffset &&
+        e.endOffset === h.endOffset
+      ));
+      lens.hits.push(...fresh);
+      lens.resumeFrom = nextStart(i);
       renderDocument(); // show this section's hits right away
       renderLensList();
     }
@@ -395,9 +482,16 @@ async function handleCreateLens() {
   }
 
   // Only a run that checked every section gets to call itself complete.
-  if (lens && !stopped && !failure && skipped === 0) lens.incomplete = false;
+  if (lens && !stopped && !failure && skipped === 0) {
+    lens.incomplete = false;
+    delete lens.resumeFrom;
+  }
 
   syncLensButton();
+
+  // Gave up on the AI's rate limit: keep "Check the rest" disabled for as long
+  // as the worker said it would take to free up (plus a second of margin).
+  if (failure && failureWait) startResumeCooldown(failureWait + 1);
 
   // If another document was opened meanwhile, or the student deleted the
   // lens while it was being built, there's nothing to report — just clear
@@ -412,7 +506,11 @@ async function handleCreateLens() {
 
   const n = lens ? lens.hits.length : 0;
   const passages = `${n} passage${n === 1 ? "" : "s"}`;
-  const covered = `The lens covers ${checked} of ${sections.length} section${sections.length === 1 ? "" : "s"} of the reading (${passages} found).`;
+  const through = lens ? Math.min(Number.isInteger(lens.resumeFrom) ? lens.resumeFrom : total, total) : 0;
+  const covered = `The lens covers the first ${through} of ${total} paragraphs (${passages} found).`;
+  const resumeHint = lens && lens.incomplete && through < total
+    ? ' Use "Check the rest" on the lens to continue.'
+    : "";
   const note = skipped > 0
     ? ` ${skipped} section${skipped === 1 ? " was" : "s were"} too large to read and skipped.`
     : "";
@@ -420,9 +518,9 @@ async function handleCreateLens() {
   if (failure && !lens) {
     setLensStatus(failure, "error");
   } else if (failure) {
-    setLensStatus(`${failure} ${covered}${note}`, "warn");
+    setLensStatus(`${failure} ${covered}${note}${resumeHint}`, "warn");
   } else if (stopped) {
-    setLensStatus(lens ? `Stopped. ${covered}${note}` : "Stopped.", "warn");
+    setLensStatus(lens ? `Stopped. ${covered}${note}${resumeHint}` : "Stopped.", "warn");
   } else if (!lens) {
     setLensStatus("None of the reading could be checked against this lens.", "error");
   } else if (n === 0) {
@@ -472,7 +570,20 @@ function renderLensList() {
     colorEl.className = "lens-color-edit";
     colorEl.addEventListener("input", (e) => {
       lens.color = e.target.value;
-      if (lens.id === state.activeLensId) renderDocument();
+      if (lens.id !== state.activeLensId) return;
+
+      // Repaint in place. Re-rendering the whole document (or this list,
+      // which would replace the colour picker mid-drag) on every input
+      // event is slow and resets the reader's scroll position.
+      const byId = new Map(lens.hits.map(h => [h.id, h]));
+      document.querySelectorAll("#document-pane .lens-hit").forEach(el => {
+        const hit = byId.get(el.dataset.hitId);
+        if (hit) el.style.cssText = lensHitStyle(lens.color, hit.strength);
+      });
+      const [strongSwatch, partialSwatch] = item.querySelectorAll(".lens-swatch");
+      if (strongSwatch) strongSwatch.style.cssText = lensHitStyle(lens.color, "strong");
+      if (partialSwatch) partialSwatch.style.cssText = lensHitStyle(lens.color, "partial");
+      refreshLensMinimap();
     });
 
     const applyBtn = document.createElement("button");
@@ -510,6 +621,21 @@ function renderLensList() {
         ? "Still reading the rest of the document..."
         : "Only part of the reading was checked for this lens.";
       item.appendChild(note);
+
+      // Offer to continue unless a run is in progress, or there's nothing
+      // left (everything was checked, apart from sections too big to send).
+      const canResume =
+        !lensRun.running &&
+        (!Number.isInteger(lens.resumeFrom) || lens.resumeFrom < state.chunks.length);
+      if (canResume) {
+        const resumeBtn = document.createElement("button");
+        resumeBtn.className = "lens-resume";
+        resumeBtn.textContent = "Check the rest";
+        resumeBtn.title = "Continue checking the part of the reading this lens hasn't covered yet";
+        resumeBtn.addEventListener("click", () => resumeLens(lens));
+        applyResumeCooldown(resumeBtn);
+        item.appendChild(resumeBtn);
+      }
     }
 
     // ---- Navigation panel, only for the applied lens ----
@@ -632,6 +758,19 @@ function addSelectionToActiveLens() {
       h.endOffset === sel.endOffset
     );
     if (duplicate) return;
+
+    // The reader paints one hit per piece of text, so a hit that overlapped
+    // another could end up completely hidden (counted, but unreachable by
+    // navigation, popup or minimap). The student's own selection replaces
+    // whatever it overlaps.
+    const overlaps = h =>
+      h.paragraphId === sel.paragraphId &&
+      h.startOffset < sel.endOffset &&
+      h.endOffset > sel.startOffset;
+    if (lens.hits.some(h => h.id === state.lensCurrentHitId && overlaps(h))) {
+      state.lensCurrentHitId = null;
+    }
+    lens.hits = lens.hits.filter(h => !overlaps(h));
 
     lens.hits.push({
       id: crypto.randomUUID(),
