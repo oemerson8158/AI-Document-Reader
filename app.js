@@ -30,6 +30,8 @@ import {
   signOutUser,
   createDocumentRecord,
   saveDocumentRecord,
+  renameDocumentRecord,
+  deleteDocumentRecord,
   getDocumentRecord,
   listUserDocuments
 } from "./modules/firebase.js";
@@ -239,6 +241,132 @@ function formatRelativeTime(timestamp) {
   return date.toLocaleDateString();
 }
 
+///////////////////////////////////////////////////////////////////////////
+// Per-document menu (the three dots on each home-screen row)
+//  One floating menu, created when a row's button is clicked and removed on
+//  any outside click, Escape, scroll or resize. Offers Rename (inline, in
+//  place of the title) and Delete (after a confirmation).
+///////////////////////////////////////////////////////////////////////////
+let docMenuEl = null;
+
+function closeDocMenu() {
+  if (docMenuEl) {
+    docMenuEl.remove();
+    docMenuEl = null;
+  }
+}
+
+document.addEventListener("click", closeDocMenu);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDocMenu(); });
+window.addEventListener("resize", closeDocMenu);
+window.addEventListener("scroll", closeDocMenu, true);
+
+function openDocMenu(anchor, docRecord, itemEl, titleEl) {
+  closeDocMenu();
+
+  const menu = document.createElement("div");
+  menu.id = "home-doc-menu";
+  menu.setAttribute("role", "menu");
+
+  const addEntry = (label, className, onClick) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.setAttribute("role", "menuitem");
+    btn.className = "home-doc-menu-item" + (className ? ` ${className}` : "");
+    btn.textContent = label;
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeDocMenu();
+      onClick();
+    });
+    menu.appendChild(btn);
+    return btn;
+  };
+
+  const renameEntry = addEntry("Rename", "", () => startRenameDocument(docRecord, titleEl));
+  addEntry("Delete", "home-doc-menu-danger", () => deleteDocument(docRecord, itemEl));
+
+  document.body.appendChild(menu);
+  docMenuEl = menu;
+
+  // Right-aligned under the button, or above it if there's no room below.
+  const rect = anchor.getBoundingClientRect();
+  menu.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
+  let top = rect.bottom + 4;
+  if (top + menu.offsetHeight > window.innerHeight - 8) top = rect.top - menu.offsetHeight - 4;
+  menu.style.top = `${Math.max(8, top)}px`;
+
+  renameEntry.focus();
+}
+
+function startRenameDocument(docRecord, titleEl) {
+  const originalTitle = docRecord.title || "Untitled document";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "home-doc-rename-input";
+  input.value = originalTitle;
+  input.maxLength = 120;
+  input.setAttribute("aria-label", "Document name");
+  // Clicking inside the box mustn't open the document.
+  input.addEventListener("click", (e) => e.stopPropagation());
+
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let finished = false;
+  const finish = async (save) => {
+    if (finished) return;
+    finished = true;
+
+    const newTitle = input.value.trim();
+    if (!save || !newTitle || newTitle === originalTitle) {
+      input.replaceWith(titleEl);
+      return;
+    }
+
+    titleEl.textContent = newTitle;
+    input.replaceWith(titleEl);
+
+    try {
+      await renameDocumentRecord(docRecord.id, newTitle);
+      docRecord.title = newTitle;
+    } catch (err) {
+      console.error("HOME: failed to rename document:", err);
+      titleEl.textContent = originalTitle;
+      alert("Couldn't rename that document. Try again in a moment.");
+    }
+  };
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+async function deleteDocument(docRecord, itemEl) {
+  const name = docRecord.title || "Untitled document";
+  if (!confirm(`Delete "${name}"? This can't be undone.`)) return;
+
+  try {
+    await deleteDocumentRecord(docRecord.id);
+  } catch (err) {
+    console.error("HOME: failed to delete document:", err);
+    alert("Couldn't delete that document. Try again in a moment.");
+    return;
+  }
+
+  itemEl.remove();
+  if (state.currentDocId === docRecord.id) state.currentDocId = null;
+
+  const listEl = document.getElementById("home-document-list");
+  if (listEl.children.length === 0) {
+    listEl.innerHTML = `<p class="tool-hint">You don't have any documents yet — click "+ New Document" to get started.</p>`;
+  }
+}
+
 async function loadHomeScreen() {
   const listEl = document.getElementById("home-document-list");
   listEl.innerHTML = `<p class="tool-hint">Loading your documents...</p>`;
@@ -276,6 +404,19 @@ async function loadHomeScreen() {
     left.appendChild(title);
     left.appendChild(meta);
     item.appendChild(left);
+
+    const menuBtn = document.createElement("button");
+    menuBtn.type = "button";
+    menuBtn.className = "home-doc-menu-btn";
+    menuBtn.textContent = "\u22EE"; // vertical three dots
+    menuBtn.title = "More actions";
+    menuBtn.setAttribute("aria-label", `Actions for ${docRecord.title || "Untitled document"}`);
+    menuBtn.setAttribute("aria-haspopup", "menu");
+    menuBtn.addEventListener("click", (e) => {
+      e.stopPropagation(); // don't open the document
+      openDocMenu(menuBtn, docRecord, item, title);
+    });
+    item.appendChild(menuBtn);
 
     item.addEventListener("click", () => openExistingDocument(docRecord.id));
 

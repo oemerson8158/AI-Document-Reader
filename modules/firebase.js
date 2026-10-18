@@ -30,6 +30,8 @@ import {
   doc,
   addDoc,
   setDoc,
+  updateDoc,
+  deleteDoc,
   getDoc,
   getDocs,
   query,
@@ -119,6 +121,18 @@ async function saveDocumentRecord(docId, data) {
   );
 }
 
+// Changes only the title of an existing document record (used by the home
+// screen's Rename). Deliberately leaves updatedAt alone, so renaming doesn't
+// reorder the list or change its "Edited ..." time.
+async function renameDocumentRecord(docId, title) {
+  await updateDoc(doc(db, DOCUMENTS_COLLECTION, docId), { title });
+}
+
+// Permanently deletes a document record (used by the home screen's Delete).
+async function deleteDocumentRecord(docId) {
+  await deleteDoc(doc(db, DOCUMENTS_COLLECTION, docId));
+}
+
 // Fetches one document record by id. Returns null if it doesn't exist.
 async function getDocumentRecord(docId) {
   const snap = await getDoc(doc(db, DOCUMENTS_COLLECTION, docId));
@@ -147,6 +161,8 @@ export {
   onAuthChange,
   createDocumentRecord,
   saveDocumentRecord,
+  renameDocumentRecord,
+  deleteDocumentRecord,
   getDocumentRecord,
   listUserDocuments
 };
