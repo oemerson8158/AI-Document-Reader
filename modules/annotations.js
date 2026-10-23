@@ -64,6 +64,79 @@ function createBookmark(name, selection) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
+//  Function: copyTextToClipboard
+//  Inputs: text (string)
+//  Outputs: Promise<boolean> — whether the copy worked
+//  Summary: Uses the modern Clipboard API where the browser allows it (it
+//    needs a secure page, i.e. https), and falls back to the older
+//    select-and-copy approach otherwise (e.g. some iPad/Safari setups).
+///////////////////////////////////////////////////////////////////////////
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      console.warn("SUMMARIZE: Clipboard API failed, trying fallback:", err);
+    }
+  }
+
+  const temp = document.createElement("textarea");
+  temp.value = text;
+  temp.setAttribute("readonly", "");
+  temp.style.position = "fixed";
+  temp.style.top = "0";
+  temp.style.opacity = "0";
+  document.body.appendChild(temp);
+  temp.select();
+  temp.setSelectionRange(0, text.length); // needed on iOS
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch (err) {
+    console.error("SUMMARIZE: fallback copy failed:", err);
+  }
+  temp.remove();
+  return ok;
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: renderSummary
+//  Inputs: outputEl (the result container), text (the summary)
+//  Outputs: Adds the summary card, with a Copy button, to outputEl
+///////////////////////////////////////////////////////////////////////////
+function renderSummary(outputEl, text) {
+  const card = document.createElement("div");
+  card.className = "summary-card";
+
+  const actions = document.createElement("div");
+  actions.className = "summary-actions";
+
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "summary-copy";
+  copyBtn.textContent = "Copy";
+  copyBtn.title = "Copy the summary to your clipboard";
+
+  let resetTimer = null;
+  copyBtn.addEventListener("click", async () => {
+    const ok = await copyTextToClipboard(text);
+    copyBtn.textContent = ok ? "Copied!" : "Couldn't copy";
+    clearTimeout(resetTimer);
+    resetTimer = setTimeout(() => { copyBtn.textContent = "Copy"; }, 2000);
+  });
+
+  actions.appendChild(copyBtn);
+
+  const body = document.createElement("div");
+  body.className = "summary-text";
+  body.textContent = text;
+
+  card.append(actions, body);
+  outputEl.appendChild(card);
+}
+
+///////////////////////////////////////////////////////////////////////////
 //  Function: loadAnnotationsUI
 //  Inputs: None
 //  Outputs: Injects the "Summarize Annotations" button and result panel
@@ -75,7 +148,6 @@ function createBookmark(name, selection) {
 function loadAnnotationsUI() {
   const content = document.getElementById("tool-content");
   content.innerHTML = `
-    <p class="tool-hint">Summarize your notes and the provocation questions you've answered into one overview.</p>
     <button id="summarize-btn" class="btn-primary">Summarize Annotations</button>
     <div id="summary-output" style="margin-top: 16px;"></div>
   `;
@@ -86,10 +158,7 @@ function loadAnnotationsUI() {
   // Restore a previously-generated summary, if there is one, so switching
   // tabs and coming back doesn't lose it.
   if (state.annotationsSummary) {
-    const summaryDiv = document.createElement("div");
-    summaryDiv.className = "summary-card";
-    summaryDiv.textContent = state.annotationsSummary;
-    outputEl.appendChild(summaryDiv);
+    renderSummary(outputEl, state.annotationsSummary);
   }
 
   summarizeBtn.addEventListener("click", async () => {
@@ -151,10 +220,7 @@ function loadAnnotationsUI() {
 
     state.annotationsSummary = data.summary;
 
-    const summaryDiv = document.createElement("div");
-    summaryDiv.className = "summary-card";
-    summaryDiv.textContent = data.summary;
-    outputEl.appendChild(summaryDiv);
+    renderSummary(outputEl, data.summary);
   });
 }
 

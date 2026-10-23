@@ -868,6 +868,26 @@ label {
   white-space: pre-wrap;
 }
 
+.summary-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+.summary-copy {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #333;
+  background: #eee;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.summary-copy:hover {
+  background: #ddd;
+}
+
 /***************************************************************************
  * LENS TOOL (NEW)
  ***************************************************************************/
@@ -1225,4 +1245,174 @@ textarea:focus-visible {
   #lens-minimap {
     display: none;
   }
+}
+
+/***************************************************************************
+ * TAB HELP ("?" button + step-by-step tutorial popup)
+ ***************************************************************************/
+
+/* Thin row under the tabs holding the discreet "?" button */
+#tool-help-row {
+  display: none;
+  justify-content: flex-end;
+  margin: -10px 0 6px;
+}
+
+.help-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  color: #777;
+  background: none;
+  border: 1px solid #bbb;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.help-btn:hover,
+.help-btn[aria-expanded="true"] {
+  color: #222;
+  background: #eee;
+}
+
+#tab-help-popup {
+  position: fixed;
+  z-index: 1100;
+  box-sizing: border-box;
+  overflow-y: auto;
+  padding: 22px 22px 18px;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.22);
+}
+
+.help-popup-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  color: #666;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.help-popup-close:hover {
+  background: #eee;
+  color: #222;
+}
+
+.help-popup-title {
+  margin: 0 28px 10px 0;
+  font-size: 1.15em;
+}
+
+.help-popup-text {
+  margin: 0 0 18px;
+  font-size: 0.95em;
+  line-height: 1.5;
+  color: #555;
+}
+
+.help-popup-list {
+  margin: 0 0 18px;
+  padding-left: 20px;
+  font-size: 0.95em;
+  line-height: 1.5;
+  color: #555;
+}
+
+.help-popup-list li {
+  margin-bottom: 8px;
+}
+
+.help-popup-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.help-popup-left,
+.help-popup-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.help-popup-pill {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 13px;
+  color: #444;
+  background: #eee;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.help-popup-pill:hover {
+  background: #ddd;
+}
+
+.help-popup-pill-active,
+.help-popup-pill-active:hover {
+  color: white;
+  background: #0078d4;
+}
+
+.help-popup-link {
+  padding: 4px 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0078d4;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.help-popup-link:hover {
+  text-decoration: underline;
+}
+
+.help-popup-back,
+.help-popup-next {
+  padding: 7px 14px;
+  font-size: 14px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.help-popup-back {
+  color: #333;
+  background: #eee;
+}
+
+.help-popup-back:hover {
+  background: #ddd;
+}
+
+.help-popup-next {
+  color: white;
+  background: #0078d4;
+}
+
+.help-popup-next:hover {
+  background: #005fa3;
 }

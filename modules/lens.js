@@ -271,7 +271,6 @@ async function requestLensSection({ query, section, sentenceSpans, skipCorrectio
 function initLensUI() {
   const content = document.getElementById("tool-content");
   content.innerHTML = `
-    <p class="tool-hint">Describe a topic or ask a question. The lens finds the sentences that bear on it &mdash; you decide which ones really do.</p>
     <div class="lens-top-row">
       <input id="lens-input" class="lens-input" placeholder="Topic or question, e.g. emotion vs. evidence" />
       <input id="lens-color" type="color" value="#c0e7ff" class="lens-color-picker" />

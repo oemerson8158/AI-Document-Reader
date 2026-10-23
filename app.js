@@ -22,6 +22,7 @@ import {
   lensHitStyle
 } from "./modules/lens.js";
 import { loadProvocationsUI } from "./modules/provocations.js";
+import { setHelpTab, hideHelp } from "./modules/help.js";
 import {
   onAuthChange,
   signUpEmail,
@@ -851,6 +852,9 @@ function setupTabs() {
       // Add active class to clicked tab
       tab.classList.add("active");
 
+      // Point the "?" button at this tab's tutorial
+      setHelpTab(tab.dataset.tab);
+
       // Clear content area
       content.innerHTML = "";
 
@@ -899,6 +903,7 @@ function resetReaderView() {
   document.querySelectorAll("#tool-tabs button").forEach(t => t.classList.remove("active"));
   document.getElementById("tool-content").innerHTML = "";
   document.getElementById("annotation-tools").style.display = "none";
+  hideHelp();
   document.getElementById("note-popup").style.display = "none";
   document.getElementById("bookmark-popup").style.display = "none";
   document.getElementById("save-status").textContent = "";
@@ -1542,6 +1547,44 @@ document.getElementById("document-pane").addEventListener("click", handleDocumen
 document.getElementById("document-pane").addEventListener("mouseup", () => {
   if (state.chunks.length === 0) return;  // Safety
   captureSelection();
+});
+
+// Touch and keyboard selections.
+//  Selecting with a finger (long-press, then dragging the selection handles)
+//  or with Shift+arrow keys never fires "mouseup", so the listener above
+//  alone misses them. Two additions cover those cases:
+//
+//  1. "selectionchange" fires whenever the browser's selection moves, however
+//     it was made. It fires many times while a handle is being dragged, so it
+//     is debounced, and it only ever CAPTURES (a non-empty selection that sits
+//     inside the document pane). It never clears: on iPadOS, tapping a sidebar
+//     button (Highlight, Bookmark...) can collapse the selection before the
+//     button's click lands, and clearing then would make the button do nothing.
+//  2. A tap (touchend) inside the pane re-reads the selection after a short
+//     delay, mirroring what mouseup does for a click: a tap that dismisses the
+//     selection clears it, one that finishes a selection captures it.
+let selectionChangeTimer = null;
+
+document.addEventListener("selectionchange", () => {
+  clearTimeout(selectionChangeTimer);
+  selectionChangeTimer = setTimeout(() => {
+    if (state.chunks.length === 0) return;
+
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+
+    const pane = document.getElementById("document-pane");
+    if (!pane.contains(sel.anchorNode) || !pane.contains(sel.focusNode)) return;
+
+    captureSelection();
+  }, 200);
+});
+
+document.getElementById("document-pane").addEventListener("touchend", () => {
+  setTimeout(() => {
+    if (state.chunks.length === 0) return;
+    captureSelection();
+  }, 300);
 });
 
 ///////////////////////////////////////////////////////////////////////////

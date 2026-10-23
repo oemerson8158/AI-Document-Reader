@@ -88,7 +88,7 @@ function renderDetail(prov) {
       <p class="prov-question"><strong>Question:</strong> ${escapeHtml(prov.question)}</p>
       <textarea id="prov-answer" rows="3">${prov.answer ? escapeHtml(prov.answer) : ""}</textarea>
       <div class="submit-row" style="justify-content: flex-start;">
-        <button id="prov-submit" class="btn-primary">${alreadyAnswered ? "Submit new answer" : "Submit answer"}</button>
+        <button id="prov-submit" class="btn-primary">${alreadyAnswered ? "Submit new answer" : "Submit Answer"}</button>
       </div>
       <div id="prov-feedback"></div>
       ${alreadyAnswered ? `
@@ -226,7 +226,7 @@ function syncGenerateButton() {
     btn.className = "btn-secondary";
     btn.disabled = genState.cancelRequested;
   } else {
-    btn.textContent = "Generate provocations";
+    btn.textContent = "Generate Provocations";
     btn.className = "btn-primary";
     btn.disabled = false;
   }
@@ -372,7 +372,6 @@ function loadProvocationsUI() {
       }
     </style>
     <div>
-      <p class="tool-hint">Select a provocation icon in the text, or generate provocations for this document.</p>
       <button id="prov-generate" class="btn-primary">Generate provocations</button>
       <div id="prov-list"></div>
       <div id="prov-detail" style="margin-top: 16px;"></div>
