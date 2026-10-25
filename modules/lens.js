@@ -6,7 +6,8 @@
 //  the worker which sentences genuinely engage it, how strongly (strong or
 //  partial), and why. The student then:
 //    • sees those sentences highlighted in the reader (stronger matches
-//      are shaded more solidly),
+//      are shaded more solidly), with the paragraph around each one given
+//      a very light wash of the lens color,
 //    • clicks any highlighted sentence to see WHY it matched, and can
 //      dismiss it if they disagree,
 //    • selects text themselves and adds it, if the lens missed something,
@@ -55,6 +56,13 @@ function lensHitStyle(color, strength) {
     return `background-color: ${hexToRgba(color, 1)};`;
   }
   return `background-color: ${hexToRgba(color, 0.4)}; border-bottom: 1px dashed rgba(0, 0, 0, 0.4);`;
+}
+
+// The wash laid over a whole paragraph that contains at least one hit.
+// Deliberately lighter than the partial-match shade (0.4) so the matching
+// sentences still stand out clearly against it.
+function lensParagraphColor(color) {
+  return hexToRgba(color, 0.15);
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -579,6 +587,14 @@ function renderLensList() {
         const hit = byId.get(el.dataset.hitId);
         if (hit) el.style.cssText = lensHitStyle(lens.color, hit.strength);
       });
+
+      // The light wash over whole paragraphs, too. (A paragraph showing the
+      // green "incorrect provocation" color keeps it.)
+      document.querySelectorAll("#document-pane p.lens-paragraph").forEach(pEl => {
+        if (pEl.dataset.provIncorrect) return;
+        pEl.style.backgroundColor = lensParagraphColor(lens.color);
+      });
+
       const [strongSwatch, partialSwatch] = item.querySelectorAll(".lens-swatch");
       if (strongSwatch) strongSwatch.style.cssText = lensHitStyle(lens.color, "strong");
       if (partialSwatch) partialSwatch.style.cssText = lensHitStyle(lens.color, "partial");
@@ -955,5 +971,6 @@ export {
   normalizeLens,
   refreshLensMinimap,
   handleDocumentPaneClick,
-  lensHitStyle
+  lensHitStyle,
+  lensParagraphColor
 };

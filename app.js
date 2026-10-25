@@ -19,7 +19,8 @@ import {
   normalizeLens,
   refreshLensMinimap,
   handleDocumentPaneClick,
-  lensHitStyle
+  lensHitStyle,
+  lensParagraphColor
 } from "./modules/lens.js";
 import { loadProvocationsUI } from "./modules/provocations.js";
 import { setHelpTab, hideHelp } from "./modules/help.js";
@@ -462,9 +463,12 @@ async function openExistingDocument(docId) {
 
   resetTransientState();
   resetReaderView();
+
+  // The reader screen has to be visible BEFORE rendering: icon placement
+  // measures where text is drawn, and a hidden screen has no layout.
+  showScreen("reader");
   renderDocument();
   renderBookmarkList();
-  showScreen("reader");
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -714,7 +718,20 @@ function renderDocument() {
     }
 
     // -----------------------------
+    // 2b. Lens paragraph shading
+    //  A paragraph containing at least one lens hit gets a very light wash
+    //  of the lens color over the whole paragraph (lighter than the
+    //  "partial" sentence shade), so matching paragraphs stand out even
+    //  when the matching sentence is off-screen.
+    // -----------------------------
+    if (activeLens && lensHits.length > 0) {
+      p.classList.add("lens-paragraph");
+      p.style.backgroundColor = lensParagraphColor(activeLens.color);
+    }
+
+    // -----------------------------
     // 3. Provocation incorrect highlight (green)
+    //  Takes priority over the lens shading on the same paragraph.
     // -----------------------------
     const provForParagraph = state.provocations.filter(
       prov => prov.paragraphId === chunk.id && prov.status === "incorrect"
@@ -722,6 +739,7 @@ function renderDocument() {
 
     if (provForParagraph.length > 0) {
       p.style.backgroundColor = "#b7ff8f"; // highlighter green
+      p.dataset.provIncorrect = "1";       // lets lens.js skip this paragraph when recoloring
     }
 
     // -----------------------------
@@ -735,6 +753,7 @@ function renderDocument() {
       const icon = document.createElement("span");
       icon.classList.add("note-icon");
       icon.dataset.noteId = note.id;
+      icon.dataset.startOffset = note.startOffset; // where the note's selection starts (used to place the icon)
       icon.textContent = "📝";
 
       icon.addEventListener("click", (event) => {
@@ -781,6 +800,52 @@ function renderDocument() {
 }
 
 ///////////////////////////////////////////////////////////////////////////
+//  Function: getTextOffsetTop
+//  Inputs: p (paragraph element), charOffset (index into the paragraph's
+//    real text), icon (the icon being placed, used to center it on the line)
+//  Outputs: Vertical distance (px) from the paragraph's top edge to the
+//    line that contains the character at charOffset
+//  Summary: Walks the paragraph's text nodes (skipping the icon emoji,
+//    which sit at the end and aren't part of the real text), finds the
+//    character at charOffset, and measures where it is drawn. Highlight
+//    and lens spans split the text into several nodes, so the offset is
+//    counted across all of them.
+///////////////////////////////////////////////////////////////////////////
+function getTextOffsetTop(p, charOffset, icon) {
+  const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT, {
+    acceptNode: node =>
+      node.parentElement.closest(".note-icon, .provocation-icon, .bookmark-icon")
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT
+  });
+
+  let remaining = charOffset;
+  let node = null;
+  let last = null;
+  while ((node = walker.nextNode())) {
+    last = node;
+    if (remaining < node.length) break;
+    remaining -= node.length;
+    node = null;
+  }
+
+  const target = node || last;
+  if (!target || target.length === 0) return 0;
+
+  const start = node ? remaining : target.length - 1;
+  const range = document.createRange();
+  range.setStart(target, start);
+  range.setEnd(target, start + 1);
+
+  const rect = range.getClientRects()[0];
+  if (!rect) return 0;
+
+  // Center the icon on the text line rather than aligning to the glyph's top.
+  const centering = Math.max(0, ((icon.offsetHeight || rect.height) - rect.height) / 2);
+  return Math.max(0, rect.top - p.getBoundingClientRect().top - centering);
+}
+
+///////////////////////////////////////////////////////////////////////////
 //  Function: layoutParagraphIcons
 //  Inputs: None
 //  Outputs: Repositions all icons (notes, provocations, bookmarks) within
@@ -792,36 +857,52 @@ function renderDocument() {
 //    a whole separate function, renderBookmarkIcons, called after this
 //    one), so none of them know whether another icon has already claimed
 //    the same spot. This runs last, once every icon for every paragraph
-//    already exists in the DOM: it lines icons up left-to-right along the
-//    paragraph's top-right corner, and grows that paragraph's own
-//    padding-right just enough to fit them — a paragraph with 0 or 1
-//    icons keeps the normal, small gutter; a paragraph with several
-//    icons gets a wider one, instead of every paragraph in the document
-//    reserving space for a worst-case icon count it will probably never
-//    have.
+//    already exists in the DOM: it lines icons up right-to-left along the
+//    paragraph's right edge, and grows that paragraph's own padding-right
+//    just enough to fit them — a paragraph with 0 or 1 icons keeps the
+//    normal, small gutter; a paragraph with several icons gets a wider
+//    one.
+//
+//    Vertically, note and bookmark icons sit beside the first line of the
+//    text they were created from (measured from the icon's saved
+//    startOffset); provocation icons stay at the top of the paragraph
+//    because they belong to the whole paragraph.
 ///////////////////////////////////////////////////////////////////////////
 function layoutParagraphIcons() {
   const pane = document.getElementById("document-pane");
-  const paragraphs = pane.querySelectorAll("p");
+  if (!pane) return;
+  const paragraphs = Array.from(pane.querySelectorAll("p"));
 
   const ICON_STEP_PX = 22;   // horizontal spacing between stacked icons
-  const BASE_GUTTER_PX = 24; // normal/default gutter width (fits 0–1 icons)
+  const BASE_GUTTER_PX = 24; // normal/default gutter width (fits 0-1 icons)
 
-  paragraphs.forEach(p => {
+  // Pass 1: size every gutter. This has to happen before measuring,
+  // because the gutter width changes how the paragraph wraps.
+  const layouts = paragraphs.map(p => {
     const icons = Array.from(
       p.querySelectorAll(".note-icon, .provocation-icon, .bookmark-icon")
     );
-
-    icons.forEach((icon, index) => {
-      icon.style.position = "absolute";
-      icon.style.top = "0px";
-      icon.style.right = `${index * ICON_STEP_PX}px`;
-    });
-
-    // Gutter only grows past the base size once there's more than one
-    // icon competing for the same space.
     const neededWidth = icons.length * ICON_STEP_PX + 4;
     p.style.paddingRight = `${Math.max(BASE_GUTTER_PX, neededWidth)}px`;
+    return { p, icons };
+  });
+
+  // Pass 2: measure (reads only, so the browser lays out once).
+  layouts.forEach(layout => {
+    layout.tops = layout.icons.map(icon => {
+      if (icon.classList.contains("provocation-icon")) return 0;
+      if (icon.dataset.startOffset === undefined) return 0;
+      return getTextOffsetTop(layout.p, Number(icon.dataset.startOffset), icon);
+    });
+  });
+
+  // Pass 3: position (writes only).
+  layouts.forEach(({ icons, tops }) => {
+    icons.forEach((icon, index) => {
+      icon.style.position = "absolute";
+      icon.style.top = `${tops[index]}px`;
+      icon.style.right = `${index * ICON_STEP_PX}px`;
+    });
   });
 
   // Changing the gutters can change how paragraphs wrap, which moves
@@ -829,6 +910,10 @@ function layoutParagraphIcons() {
   // refreshed here, after layout has settled.
   refreshLensMinimap();
 }
+
+// Resizing the window re-wraps paragraphs, which moves the selected line,
+// so icons are re-placed whenever the window size changes.
+window.addEventListener("resize", layoutParagraphIcons);
 
 ///////////////////////////////////////////////////////////////////////////
 //  Function: setupTabs
@@ -1060,6 +1145,7 @@ function renderBookmarkIcons() {
     icon.textContent = "🔖";
     icon.className = "bookmark-icon";
     icon.dataset.id = b.id;
+    icon.dataset.startOffset = b.startOffset; // where the bookmark's selection starts (used to place the icon)
 
     icon.style.top = "0px";
 
@@ -1827,9 +1913,12 @@ async function createDocumentAndEnterReader(text, purpose, analysisType) {
   }
 
   resetReaderView();
+
+  // The reader screen has to be visible BEFORE rendering: icon placement
+  // measures where text is drawn, and a hidden screen has no layout.
+  showScreen("reader");
   renderDocument();
   renderBookmarkList();
-  showScreen("reader");
 }
 
 //Allows the user to upload a .txt, .pdf, or .docx file instead of pasting text
