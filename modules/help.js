@@ -1,14 +1,13 @@
 ///////////////////////////////////////////////////////////////////////////
 // help.js
-//  Each sidebar tab has a small "?" button. Clicking it opens a step-by-step
-//  tutorial for that tab: one step at a time (with numbered step buttons and
-//  Back / Next), or every step at once via "View all steps". An X in the
-//  top-right corner, the Done button, Escape, or a click anywhere outside
-//  the tutorial closes it.
+//  Each sidebar tab has a "?" button that opens a step-by-step tutorial for
+//  that tab, shown one step at a time (numbered buttons, Back / Next) or all
+//  at once ("View all steps"). The X, Done, Escape, or a click outside the
+//  tutorial closes it.
 //
-//  The "?" button itself lives in index.html (#tool-help-row); app.js calls
+//  The "?" button lives in index.html (#tool-help-row). app.js calls
 //  setHelpTab() when a tab is selected and hideHelp() when a document is
-//  opened. Edit the wording of any tutorial in TAB_HELP below.
+//  opened. Edit a tutorial's wording in TAB_HELP below.
 //
 //  Oliver Emerson - 2025-2026
 ///////////////////////////////////////////////////////////////////////////
@@ -55,6 +54,12 @@ const helpBtn = document.getElementById("tool-help-btn");
 let popupEl = null;
 let current = { tab: null, step: 0, showAll: false };
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: el
+//  Inputs: tag, className (optional), text (optional)
+//  Outputs: The new DOM element
+//  Summary: Small helper for building elements.
+///////////////////////////////////////////////////////////////////////////
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -62,7 +67,12 @@ function el(tag, className, text) {
   return node;
 }
 
-// Sits just under the "?" button, as wide as the sidebar.
+///////////////////////////////////////////////////////////////////////////
+//  Function: positionPopup
+//  Inputs: None
+//  Outputs: Moves and sizes the popup
+//  Summary: Places it just under the "?" button, as wide as the sidebar.
+///////////////////////////////////////////////////////////////////////////
 function positionPopup() {
   if (!popupEl) return;
   const pane = document.getElementById("tool-pane").getBoundingClientRect();
@@ -75,6 +85,13 @@ function positionPopup() {
   popupEl.style.maxHeight = `${Math.max(160, window.innerHeight - top - 12)}px`;
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: render
+//  Inputs: None (reads `current`)
+//  Outputs: Rebuilds the popup's contents
+//  Summary: Draws either the current step or the full list, plus the step
+//    buttons, view toggle, and Back / Next / Done.
+///////////////////////////////////////////////////////////////////////////
 function render() {
   const guide = TAB_HELP[current.tab];
   const steps = guide.steps;
@@ -153,6 +170,12 @@ function render() {
   positionPopup();
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: openTabHelp
+//  Inputs: tab (key of TAB_HELP)
+//  Outputs: Opens the tutorial popup for that tab, starting at step 1
+//  Summary: Does nothing for a tab with no tutorial.
+///////////////////////////////////////////////////////////////////////////
 function openTabHelp(tab) {
   if (!TAB_HELP[tab]) return;
   closeTabHelp();
@@ -172,6 +195,11 @@ function openTabHelp(tab) {
   render();
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: closeTabHelp
+//  Inputs: None
+//  Outputs: Removes the popup if open
+///////////////////////////////////////////////////////////////////////////
 function closeTabHelp() {
   if (popupEl) {
     popupEl.remove();
@@ -181,10 +209,12 @@ function closeTabHelp() {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-//  Called by app.js
+//  Function: setHelpTab
+//  Inputs: tab (the tab just selected)
+//  Outputs: Points the "?" button at that tab's tutorial, or hides it if
+//    the tab has none
+//  Summary: Called by app.js when a tab is selected.
 ///////////////////////////////////////////////////////////////////////////
-
-// A tab was selected: point the "?" button at that tab's tutorial.
 function setHelpTab(tab) {
   closeTabHelp();
   if (!TAB_HELP[tab]) {
@@ -197,7 +227,13 @@ function setHelpTab(tab) {
   helpRow.style.display = "flex";
 }
 
-// No tab is active (e.g. a document was just opened).
+///////////////////////////////////////////////////////////////////////////
+//  Function: hideHelp
+//  Inputs: None
+//  Outputs: Closes the popup and hides the "?" button
+//  Summary: Called by app.js when no tab is active (e.g. a document was
+//    just opened).
+///////////////////////////////////////////////////////////////////////////
 function hideHelp() {
   closeTabHelp();
   helpRow.style.display = "none";
@@ -205,7 +241,7 @@ function hideHelp() {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-//  Registered once, when this module loads
+// Listeners (registered once, when this module loads)
 ///////////////////////////////////////////////////////////////////////////
 
 helpBtn.addEventListener("click", () => {

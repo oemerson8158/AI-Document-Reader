@@ -1,17 +1,17 @@
 ///////////////////////////////////////////////////////////////////////////
-// AI Document Reader
-//  This project implements an interactive reading and analysis tool
-//  designed to help students understand complex documents more deeply.
-//  Its purpose is to support active reading through features such as
-//  annotations, topic-based lenses, Lexile rephrasing, and AI-generated
-//  provocations that guide comprehension and critical thinking. By
-//  combining structured document parsing with targeted AI assistance,
-//  the tool helps students engage with texts more effectively.
+// app.js
+//  Entry point of the AI Document Reader, an interactive reading tool that
+//  helps students understand complex documents. It owns the shared state and
+//  the reader screen, and wires together the feature modules: annotations,
+//  topic lenses, Lexile rephrasing, and AI-generated provocations.
+//
+//  Sections, in order: state, screens, login, home, upload (file import),
+//  document rendering, paragraph icons, sidebar tabs, text selection,
+//  annotation tools (highlights, bookmarks, notes), and startup.
 //
 //  Oliver Emerson - 2025-2026
 ///////////////////////////////////////////////////////////////////////////
 
-//Imports functions from various files in modules
 import { addAnnotation, createBookmark, loadAnnotationsUI } from "./modules/annotations.js";
 import { initRephraseUI } from "./modules/rephrase.js";
 import {
@@ -39,35 +39,28 @@ import {
 } from "./modules/firebase.js";
 
 ///////////////////////////////////////////////////////////////////////////
-// Variables
+// State
 ///////////////////////////////////////////////////////////////////////////
 
-//Array to track the currently selected text for annotation tools
+// The student's current text selection, as [{ paragraphId, startOffset,
+// endOffset, text }]. Read by the annotation tools and lens.js.
 let currentSelections = [];
 
-///////////////////////////////////////////////////////////////////////////
-// Global State Object
-//  This object stores all shared application data for the AI Document
-//  Reader. It acts as the central memory of the tool, allowing every
-//  module (provocations, rephrase, lenses, annotations) to access and
-//  update the document, reading mode, paragraph chunks, and user actions.
-///////////////////////////////////////////////////////////////////////////
+// Shared application data. Every module reads and updates this object.
 const state = {
   currentUser: null,
   currentDocId: null,
   documentTitle: "",
-  documentText: "",
   purpose: "",
   analysisType: "literary",
   highlightColor: "#ffff00",
-  chunks: [],
+  chunks: [],              // the document's paragraphs: [{ id, text }]
   annotations: [],
   annotationsSummary: null,
   provocations: [],
   lenses: [],
-  activeLensId: null,      // id of the lens currently applied to the reader, if any
-  lensCurrentHitId: null,  // id of the hit last navigated to (for Previous/Next)
-  rephrased: [],
+  activeLensId: null,      // lens currently applied to the reader, if any
+  lensCurrentHitId: null,  // hit last navigated to (for Previous/Next)
   rephrase: {
     selectedParagraphIds: [],
     selectedText: "",
@@ -78,19 +71,14 @@ const state = {
   }
 };
 
-
-
 ///////////////////////////////////////////////////////////////////////////
-// FUNCTIONS
+// Screens
 ///////////////////////////////////////////////////////////////////////////
 
 ///////////////////////////////////////////////////////////////////////////
 //  Function: showScreen
-//  Inputs: screenName — one of "login", "home", "upload", "reader"
-//  Outputs: Shows the matching top-level screen div, hides the other three
-//  Summary: Single place that controls which of the app's four screens is
-//    visible, so screen transitions don't rely on scattered, easy-to-miss
-//    style.display assignments at each call site.
+//  Inputs: screenName — "login", "home", "upload", or "reader"
+//  Outputs: Shows that top-level screen and hides the other three
 ///////////////////////////////////////////////////////////////////////////
 function showScreen(screenName) {
   const screens = {
@@ -111,25 +99,39 @@ function showScreen(screenName) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-// LOGIN SCREEN
-//  Supports both sign-in and account-creation through the same form,
-//  toggled by authMode — avoids duplicating the email/password markup
-//  for two separate forms.
+// Login screen
+//  One form serves both sign-in and account creation, toggled by authMode.
 ///////////////////////////////////////////////////////////////////////////
+
 let authMode = "signin"; // "signin" | "signup"
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: showAuthError
+//  Inputs: message (string)
+//  Outputs: Shows the message above the login form
+///////////////////////////////////////////////////////////////////////////
 function showAuthError(message) {
   const errEl = document.getElementById("auth-error");
   errEl.textContent = message;
   errEl.style.display = "block";
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: clearAuthError
+//  Inputs: None
+//  Outputs: Hides the login error message
+///////////////////////////////////////////////////////////////////////////
 function clearAuthError() {
   const errEl = document.getElementById("auth-error");
   errEl.style.display = "none";
   errEl.textContent = "";
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: setAuthMode
+//  Inputs: mode — "signin" or "signup"
+//  Outputs: Updates the form's button and toggle text to match
+///////////////////////////////////////////////////////////////////////////
 function setAuthMode(mode) {
   authMode = mode;
   clearAuthError();
@@ -148,8 +150,11 @@ function setAuthMode(mode) {
   }
 }
 
-// Friendlier text for the Firebase error codes a user is actually likely
-// to hit, rather than surfacing raw "Firebase: Error (auth/...)" strings.
+///////////////////////////////////////////////////////////////////////////
+//  Function: friendlyAuthErrorMessage
+//  Inputs: err (a Firebase auth error)
+//  Outputs: Plain-English text for the error codes a user is likely to hit
+///////////////////////////////////////////////////////////////////////////
 function friendlyAuthErrorMessage(err) {
   const code = err && err.code ? err.code : "";
   switch (code) {
@@ -198,7 +203,7 @@ document.getElementById("auth-submit").addEventListener("click", async () => {
     } else {
       await signInEmail(email, password);
     }
-    // onAuthChange (registered below) handles navigating to the home screen.
+    // onAuthChange (registered at startup) navigates to the home screen.
   } catch (err) {
     console.error("AUTH: sign-in/sign-up failed:", err);
     showAuthError(friendlyAuthErrorMessage(err));
@@ -226,9 +231,17 @@ document.getElementById("home-sign-out").addEventListener("click", async () => {
 });
 
 ///////////////////////////////////////////////////////////////////////////
-// HOME SCREEN
+// Home screen
 ///////////////////////////////////////////////////////////////////////////
 
+// The floating Rename / Delete menu on a document row, if open.
+let docMenuEl = null;
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: formatRelativeTime
+//  Inputs: timestamp (a Firestore Timestamp)
+//  Outputs: Text like "5 minutes ago"; a date after 30 days; "" if missing
+///////////////////////////////////////////////////////////////////////////
 function formatRelativeTime(timestamp) {
   if (!timestamp || typeof timestamp.toDate !== "function") return "";
   const date = timestamp.toDate();
@@ -244,13 +257,10 @@ function formatRelativeTime(timestamp) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-// Per-document menu (the three dots on each home-screen row)
-//  One floating menu, created when a row's button is clicked and removed on
-//  any outside click, Escape, scroll or resize. Offers Rename (inline, in
-//  place of the title) and Delete (after a confirmation).
+//  Function: closeDocMenu
+//  Inputs: None
+//  Outputs: Removes the document menu if open
 ///////////////////////////////////////////////////////////////////////////
-let docMenuEl = null;
-
 function closeDocMenu() {
   if (docMenuEl) {
     docMenuEl.remove();
@@ -263,6 +273,13 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDocMe
 window.addEventListener("resize", closeDocMenu);
 window.addEventListener("scroll", closeDocMenu, true);
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: openDocMenu
+//  Inputs: anchor (the three-dots button), docRecord, itemEl (the row),
+//    titleEl (the row's title element)
+//  Outputs: Shows a menu with Rename and Delete under the button, or above
+//    it if there's no room below
+///////////////////////////////////////////////////////////////////////////
 function openDocMenu(anchor, docRecord, itemEl, titleEl) {
   closeDocMenu();
 
@@ -291,7 +308,6 @@ function openDocMenu(anchor, docRecord, itemEl, titleEl) {
   document.body.appendChild(menu);
   docMenuEl = menu;
 
-  // Right-aligned under the button, or above it if there's no room below.
   const rect = anchor.getBoundingClientRect();
   menu.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
   let top = rect.bottom + 4;
@@ -301,6 +317,13 @@ function openDocMenu(anchor, docRecord, itemEl, titleEl) {
   renameEntry.focus();
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: startRenameDocument
+//  Inputs: docRecord, titleEl (the row's title element)
+//  Outputs: Replaces the title with a text box; Enter or clicking away
+//    saves the new name, Escape cancels
+//  Summary: Reverts the title if saving to Firestore fails.
+///////////////////////////////////////////////////////////////////////////
 function startRenameDocument(docRecord, titleEl) {
   const originalTitle = docRecord.title || "Untitled document";
 
@@ -348,6 +371,11 @@ function startRenameDocument(docRecord, titleEl) {
   input.addEventListener("blur", () => finish(true));
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: deleteDocument
+//  Inputs: docRecord, itemEl (the row)
+//  Outputs: After confirmation, deletes the document and removes its row
+///////////////////////////////////////////////////////////////////////////
 async function deleteDocument(docRecord, itemEl) {
   const name = docRecord.title || "Untitled document";
   if (!confirm(`Delete "${name}"? This can't be undone.`)) return;
@@ -369,6 +397,12 @@ async function deleteDocument(docRecord, itemEl) {
   }
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: loadHomeScreen
+//  Inputs: None
+//  Outputs: Fills #home-document-list with the user's documents, most
+//    recently edited first
+///////////////////////////////////////////////////////////////////////////
 async function loadHomeScreen() {
   const listEl = document.getElementById("home-document-list");
   listEl.innerHTML = `<p class="tool-hint">Loading your documents...</p>`;
@@ -429,9 +463,8 @@ async function loadHomeScreen() {
 ///////////////////////////////////////////////////////////////////////////
 //  Function: openExistingDocument
 //  Inputs: docId — Firestore document id
-//  Outputs: Populates state from the saved record and shows the reader
-//  Summary: Reverse of saveCurrentDocument() below — restores everything
-//    that was saved for this document and renders it.
+//  Outputs: Loads the saved record into state and shows the reader
+//  Summary: The reverse of saveCurrentDocument().
 ///////////////////////////////////////////////////////////////////////////
 async function openExistingDocument(docId) {
   let record;
@@ -464,8 +497,8 @@ async function openExistingDocument(docId) {
   resetTransientState();
   resetReaderView();
 
-  // The reader screen has to be visible BEFORE rendering: icon placement
-  // measures where text is drawn, and a hidden screen has no layout.
+  // The reader must be visible before rendering: icon placement measures
+  // where text is drawn, and a hidden screen has no layout.
   showScreen("reader");
   renderDocument();
   renderBookmarkList();
@@ -474,10 +507,9 @@ async function openExistingDocument(docId) {
 ///////////////////////////////////////////////////////////////////////////
 //  Function: saveCurrentDocument
 //  Inputs: None
-//  Outputs: Writes the current document's saveable state to Firestore
-//  Summary: Called by the Save button. Only the durable, user-created
-//    content is saved — not transient UI state like which lens is
-//    currently applied or what's mid-draft in the Rephrase tool.
+//  Outputs: Writes the document's saveable state to Firestore
+//  Summary: Called by the Save button. Saves only durable content, not
+//    transient UI state such as the applied lens or a Rephrase draft.
 ///////////////////////////////////////////////////////////////////////////
 async function saveCurrentDocument() {
   if (!state.currentDocId) return;
@@ -519,7 +551,6 @@ document.getElementById("back-to-documents").addEventListener("click", () => {
 });
 
 document.getElementById("home-new-document").addEventListener("click", () => {
-  // Reset upload-screen inputs from any previous document
   document.getElementById("document-input").value = "";
   document.getElementById("file-input").value = "";
   document.getElementById("file-upload-status").textContent = "";
@@ -527,21 +558,14 @@ document.getElementById("home-new-document").addEventListener("click", () => {
 });
 
 ///////////////////////////////////////////////////////////////////////////
-// AUTH STATE — drives which screen is shown on load and after login/logout
+// Upload screen (paste text or import a file)
 ///////////////////////////////////////////////////////////////////////////
-onAuthChange((user) => {
-  state.currentUser = user;
-  if (user) {
-    showScreen("home");
-    loadHomeScreen();
-  } else {
-    showScreen("login");
-  }
-});
 
-//UPLOAD SCREEN — Analysis subtype visibility
-//  The "Analysis Focus" dropdown only makes sense when purpose is set to
-//  Analysis, so it's shown/hidden in sync with the purpose dropdown.
+///////////////////////////////////////////////////////////////////////////
+//  Function: syncAnalysisTypeVisibility
+//  Inputs: None
+//  Outputs: Shows the "Analysis Focus" dropdown only when the purpose is
+//    Analysis
 ///////////////////////////////////////////////////////////////////////////
 function syncAnalysisTypeVisibility() {
   const purposeSelect = document.getElementById("purpose-select");
@@ -551,1168 +575,32 @@ function syncAnalysisTypeVisibility() {
 }
 
 document.getElementById("purpose-select").addEventListener("change", syncAnalysisTypeVisibility);
-syncAnalysisTypeVisibility(); // set correct initial state on page load
-
-//RENDER FUNCTIONS
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: loadDocument
-//  Inputs: text (string), purpose (string: "analysis" or "memorize")
-//  Outputs: Writes document text, purpose, and paragraph chunks to state
-//  Error Checking: Assumes valid text and purpose are provided
-//  Summary: Loads the user's document into the global state, records the
-//    selected reading mode, and splits the document into paragraph-level
-//    chunks. These chunks serve as the structural foundation for lenses,
-//    provocations, annotations, and rephrasing.
-///////////////////////////////////////////////////////////////////////////
-function loadDocument(text, purpose, analysisType) {
-  // Start from a clean slate: without this, annotations, lenses, and
-  // provocations from whichever document was open before would carry over
-  // into this new one (and get saved into it).
-  state.currentDocId = null;
-  state.annotations = [];
-  state.annotationsSummary = null;
-  state.provocations = [];
-  state.lenses = [];
-  state.activeLensId = null;
-  state.lensCurrentHitId = null;
-  resetTransientState();
-
-  state.documentText = text;
-  state.purpose = purpose;
-  state.analysisType = purpose === "analysis" ? (analysisType || "literary") : "literary";
-
-  // Normalize all newline types
-  const normalized = text
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .trim();
-
-  // Split on ANY blank line OR single newline
-  let paragraphs = normalized
-    .split(/\n\s*\n|\n+/)   // ← this is the key change
-    .map(p => p.trim())
-    .filter(p => p.length > 0);
-
-  // Store chunks
-  state.chunks = paragraphs.map((p, i) => ({
-    id: i,
-    text: p
-  }));
-}
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: getParagraph
-//  Inputs: id (integer representing a paragraph ID)
-//  Outputs: Returns the paragraph object matching the given ID
-//  Error Checking: Returns undefined if the ID does not exist
-//  Summary: Retrieves a specific paragraph chunk from the global state.
-//    This provides a consistent way for modules to access the exact
-//    passage needed for provocations, rephrasing, lenses, and annotations.
-///////////////////////////////////////////////////////////////////////////
-function getParagraph(id) {
-  return state.chunks.find(chunk => chunk.id === id);
-}
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: escapeHtml
-//  Summary: Document text is untrusted (it can contain "<" or "&"), so it
-//    has to be escaped before being placed into innerHTML.
-///////////////////////////////////////////////////////////////////////////
-function escapeHtml(str) {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: buildParagraphHtml
-//  Inputs: text (the paragraph's text), highlights (the student's yellow-
-//    pen annotations), lensHits (hits from the applied lens), lens (the
-//    applied lens, for its color)
-//  Outputs: An HTML string for the paragraph
-//  Summary: Highlights and lens hits can overlap in any way, so rather
-//    than trying to nest them by hand, this cuts the text at every
-//    boundary any of them has, and styles each resulting piece according
-//    to whichever highlight and/or lens hit covers it. The lens shading is
-//    the outer span and the student's highlight the inner one, so both
-//    stay visible where they overlap.
-///////////////////////////////////////////////////////////////////////////
-function buildParagraphHtml(text, highlights, lensHits, lens) {
-  const len = text.length;
-  const clamp = n => Math.max(0, Math.min(len, n));
-
-  const points = new Set([0, len]);
-  highlights.forEach(h => { points.add(clamp(h.startOffset)); points.add(clamp(h.endOffset)); });
-  lensHits.forEach(h => { points.add(clamp(h.startOffset)); points.add(clamp(h.endOffset)); });
-  const cuts = Array.from(points).sort((a, b) => a - b);
-
-  let html = "";
-
-  for (let i = 0; i < cuts.length - 1; i++) {
-    const a = cuts[i];
-    const b = cuts[i + 1];
-    if (b <= a) continue;
-
-    let piece = escapeHtml(text.slice(a, b));
-
-    const highlight = highlights.find(h => h.startOffset <= a && h.endOffset >= b);
-    if (highlight) {
-      const color = highlight.color || "#ffff00";
-      piece = `<span class="highlighted" style="background-color:${color};">${piece}</span>`;
-    }
-
-    // If lens hits overlap, a strong one wins over a partial one.
-    const covering = lensHits.filter(h => h.startOffset <= a && h.endOffset >= b);
-    const hit = covering.find(h => h.strength === "strong") || covering[0];
-    if (hit && lens) {
-      const current = hit.id === state.lensCurrentHitId ? " lens-hit-current" : "";
-      piece = `<span class="lens-hit${current}" data-hit-id="${hit.id}" style="${lensHitStyle(lens.color, hit.strength)}">${piece}</span>`;
-    }
-
-    html += piece;
-  }
-
-  return html;
-}
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: renderDocument
-//  Inputs: None
-//  Outputs: Renders all paragraph chunks into #document-pane as <p> tags
-//  Error Checking: Assumes state.chunks is already populated by loadDocument
-//  Summary: Generates the scrollable document viewer in the left pane of
-//    the reader screen. Each paragraph chunk is converted into a <p>
-//    element with a data-id attribute.
-///////////////////////////////////////////////////////////////////////////
-function renderDocument() {
-  const pane = document.getElementById("document-pane");
-  const savedScroll = pane.scrollTop; // rebuilding the pane resets scrolling; restored at the end
-  pane.innerHTML = "";
-
-  const activeLens = state.lenses.find(l => l.id === state.activeLensId) || null;
-
-  state.chunks.forEach(chunk => {
-    const p = document.createElement("p");
-    p.dataset.id = chunk.id;
-
-    // -----------------------------
-    // 1 + 2. Annotation highlights and lens hits
-    //  Both are drawn as spans over the paragraph's text. If a paragraph
-    //  has neither, it stays plain text.
-    // -----------------------------
-    const highlights = state.annotations
-      .filter(a => a.paragraphId === chunk.id && a.type === "highlight")
-      .sort((a, b) => a.startOffset - b.startOffset);
-
-    const lensHits = activeLens
-      ? activeLens.hits.filter(h => h.paragraphId === chunk.id)
-      : [];
-
-    if (highlights.length === 0 && lensHits.length === 0) {
-      p.textContent = chunk.text;
-    } else {
-      p.innerHTML = buildParagraphHtml(chunk.text, highlights, lensHits, activeLens);
-    }
-
-    // -----------------------------
-    // 2b. Lens paragraph shading
-    //  A paragraph containing at least one lens hit gets a very light wash
-    //  of the lens color over the whole paragraph (lighter than the
-    //  "partial" sentence shade), so matching paragraphs stand out even
-    //  when the matching sentence is off-screen.
-    // -----------------------------
-    if (activeLens && lensHits.length > 0) {
-      p.classList.add("lens-paragraph");
-      p.style.backgroundColor = lensParagraphColor(activeLens.color);
-    }
-
-    // -----------------------------
-    // 3. Provocation incorrect highlight (green)
-    //  Takes priority over the lens shading on the same paragraph.
-    // -----------------------------
-    const provForParagraph = state.provocations.filter(
-      prov => prov.paragraphId === chunk.id && prov.status === "incorrect"
-    );
-
-    if (provForParagraph.length > 0) {
-      p.style.backgroundColor = "#b7ff8f"; // highlighter green
-      p.dataset.provIncorrect = "1";       // lets lens.js skip this paragraph when recoloring
-    }
-
-    // -----------------------------
-    // 4. Note icons
-    // -----------------------------
-    const notes = state.annotations.filter(a =>
-      a.paragraphId === chunk.id && a.type === "note"
-    );
-
-    notes.forEach(note => {
-      const icon = document.createElement("span");
-      icon.classList.add("note-icon");
-      icon.dataset.noteId = note.id;
-      icon.dataset.startOffset = note.startOffset; // where the note's selection starts (used to place the icon)
-      icon.textContent = "📝";
-
-      icon.addEventListener("click", (event) => {
-        event.stopPropagation();
-        showNotePopup(note, icon);
-      });
-
-      p.appendChild(icon);
-    });
-
-    // -----------------------------
-    // 5. Provocation icons (💡)
-    // -----------------------------
-    const provs = state.provocations.filter(
-      prov => prov.paragraphId === chunk.id
-    );
-
-    provs.forEach(prov => {
-      const icon = document.createElement("span");
-      icon.classList.add("provocation-icon");
-      icon.dataset.provId = prov.id;
-      icon.textContent = "💡";
-
-      icon.style.position = "absolute";
-      icon.style.right = "0px";
-      icon.style.top = "0px";
-
-      icon.addEventListener("click", (event) => {
-        event.stopPropagation();
-
-        window.dispatchEvent(new CustomEvent("provocation:selected", {
-          detail: { provId: prov.id }
-        }));
-      });
-
-      p.appendChild(icon);
-    });
-
-    pane.appendChild(p);
-  });
-
-  renderBookmarkIcons();
-  pane.scrollTop = savedScroll;
-}
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: getTextOffsetTop
-//  Inputs: p (paragraph element), charOffset (index into the paragraph's
-//    real text), icon (the icon being placed, used to center it on the line)
-//  Outputs: Vertical distance (px) from the paragraph's top edge to the
-//    line that contains the character at charOffset
-//  Summary: Walks the paragraph's text nodes (skipping the icon emoji,
-//    which sit at the end and aren't part of the real text), finds the
-//    character at charOffset, and measures where it is drawn. Highlight
-//    and lens spans split the text into several nodes, so the offset is
-//    counted across all of them.
-///////////////////////////////////////////////////////////////////////////
-function getTextOffsetTop(p, charOffset, icon) {
-  const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT, {
-    acceptNode: node =>
-      node.parentElement.closest(".note-icon, .provocation-icon, .bookmark-icon")
-        ? NodeFilter.FILTER_REJECT
-        : NodeFilter.FILTER_ACCEPT
-  });
-
-  let remaining = charOffset;
-  let node = null;
-  let last = null;
-  while ((node = walker.nextNode())) {
-    last = node;
-    if (remaining < node.length) break;
-    remaining -= node.length;
-    node = null;
-  }
-
-  const target = node || last;
-  if (!target || target.length === 0) return 0;
-
-  const start = node ? remaining : target.length - 1;
-  const range = document.createRange();
-  range.setStart(target, start);
-  range.setEnd(target, start + 1);
-
-  const rect = range.getClientRects()[0];
-  if (!rect) return 0;
-
-  // Center the icon on the text line rather than aligning to the glyph's top.
-  const centering = Math.max(0, ((icon.offsetHeight || rect.height) - rect.height) / 2);
-  return Math.max(0, rect.top - p.getBoundingClientRect().top - centering);
-}
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: layoutParagraphIcons
-//  Inputs: None
-//  Outputs: Repositions all icons (notes, provocations, bookmarks) within
-//    each paragraph so they sit side-by-side instead of overlapping, and
-//    sizes each paragraph's right-side gutter to fit only as many icons
-//    as that specific paragraph actually has.
-//  Summary: Notes, provocations, and bookmarks are each added to a
-//    paragraph independently by separate code (and bookmarks are added by
-//    a whole separate function, renderBookmarkIcons, called after this
-//    one), so none of them know whether another icon has already claimed
-//    the same spot. This runs last, once every icon for every paragraph
-//    already exists in the DOM: it lines icons up right-to-left along the
-//    paragraph's right edge, and grows that paragraph's own padding-right
-//    just enough to fit them — a paragraph with 0 or 1 icons keeps the
-//    normal, small gutter; a paragraph with several icons gets a wider
-//    one.
-//
-//    Vertically, note and bookmark icons sit beside the first line of the
-//    text they were created from (measured from the icon's saved
-//    startOffset); provocation icons stay at the top of the paragraph
-//    because they belong to the whole paragraph.
-///////////////////////////////////////////////////////////////////////////
-function layoutParagraphIcons() {
-  const pane = document.getElementById("document-pane");
-  if (!pane) return;
-  const paragraphs = Array.from(pane.querySelectorAll("p"));
-
-  const ICON_STEP_PX = 22;   // horizontal spacing between stacked icons
-  const BASE_GUTTER_PX = 24; // normal/default gutter width (fits 0-1 icons)
-
-  // Pass 1: size every gutter. This has to happen before measuring,
-  // because the gutter width changes how the paragraph wraps.
-  const layouts = paragraphs.map(p => {
-    const icons = Array.from(
-      p.querySelectorAll(".note-icon, .provocation-icon, .bookmark-icon")
-    );
-    const neededWidth = icons.length * ICON_STEP_PX + 4;
-    p.style.paddingRight = `${Math.max(BASE_GUTTER_PX, neededWidth)}px`;
-    return { p, icons };
-  });
-
-  // Pass 2: measure (reads only, so the browser lays out once).
-  layouts.forEach(layout => {
-    layout.tops = layout.icons.map(icon => {
-      if (icon.classList.contains("provocation-icon")) return 0;
-      if (icon.dataset.startOffset === undefined) return 0;
-      return getTextOffsetTop(layout.p, Number(icon.dataset.startOffset), icon);
-    });
-  });
-
-  // Pass 3: position (writes only).
-  layouts.forEach(({ icons, tops }) => {
-    icons.forEach((icon, index) => {
-      icon.style.position = "absolute";
-      icon.style.top = `${tops[index]}px`;
-      icon.style.right = `${index * ICON_STEP_PX}px`;
-    });
-  });
-
-  // Changing the gutters can change how paragraphs wrap, which moves
-  // where every lens hit sits on the page — so the lens minimap is
-  // refreshed here, after layout has settled.
-  refreshLensMinimap();
-}
-
-// Resizing the window re-wraps paragraphs, which moves the selected line,
-// so icons are re-placed whenever the window size changes.
-window.addEventListener("resize", layoutParagraphIcons);
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: setupTabs
-//  Inputs: None
-//  Outputs: Activates sidebar tab switching
-//  Summary: Enables interactive switching between sidebar modules.
-//    Highlights the active tab and prepares the content area for
-//    Phase 6–8 modules.
-///////////////////////////////////////////////////////////////////////////
-function setupTabs() {
-  const tabs = document.querySelectorAll("#tool-tabs button");
-  const content = document.getElementById("tool-content");
-  const annotationTools = document.getElementById("annotation-tools");
-
-  tabs.forEach(tab => {
-    tab.addEventListener("click", () => {
-
-      // Remove active class from all tabs
-      tabs.forEach(t => t.classList.remove("active"));
-
-      // Add active class to clicked tab
-      tab.classList.add("active");
-
-      // Point the "?" button at this tab's tutorial
-      setHelpTab(tab.dataset.tab);
-
-      // Clear content area
-      content.innerHTML = "";
-
-      // Show annotation tools ONLY when annotations tab is selected
-      if (tab.dataset.tab === "annotations") {
-        annotationTools.style.display = "block";
-        loadAnnotationsUI();
-      } else {
-        annotationTools.style.display = "none";
-      }
-
-      // Load Rephrase UI when Rephrase tab is selected
-      if (tab.dataset.tab === "rephrase") {
-        loadRephraseUI();
-        return;
-      }
-
-      // Load Lens UI when Lens tab is selected
-      if (tab.dataset.tab === "lenses") {
-        loadLensesUI();
-        return;
-      }
-
-      // Load Provocations UI when Provocations tab is selected
-      if (tab.dataset.tab === "provocations") {
-        loadProvocationsUI();
-        return;
-      }
-
-    });
-  });
-}
-
-// The tab buttons are static HTML, so their listeners are attached exactly
-// once, at startup. (Calling this every time a document was opened stacked
-// duplicate listeners, so each tab click ran its loader several times.)
-setupTabs();
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: resetReaderView
-//  Summary: Puts the reader's chrome back to a blank starting point when a
-//    document is opened: no active tab, empty sidebar content, annotation
-//    tools hidden, popups closed, and the document scrolled to the top.
-///////////////////////////////////////////////////////////////////////////
-function resetReaderView() {
-  document.querySelectorAll("#tool-tabs button").forEach(t => t.classList.remove("active"));
-  document.getElementById("tool-content").innerHTML = "";
-  document.getElementById("annotation-tools").style.display = "none";
-  hideHelp();
-  document.getElementById("note-popup").style.display = "none";
-  document.getElementById("bookmark-popup").style.display = "none";
-  document.getElementById("save-status").textContent = "";
-  document.getElementById("document-pane").scrollTop = 0;
-}
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: resetTransientState
-//  Summary: Clears per-document working state (the current text selection
-//    and the Rephrase tool's draft) so nothing from the previously open
-//    document can leak into a newly opened one.
-///////////////////////////////////////////////////////////////////////////
-function resetTransientState() {
-  currentSelections = [];
-  state.rephrase = {
-    selectedParagraphIds: [],
-    selectedText: "",
-    paragraphs: [],
-    lexile: null,
-    includeExample: false,
-    result: ""
-  };
-}
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: loadRephraseUI
-//  Inputs: None
-//  Outputs: Injects the rephrase tool UI into #tool-content and initializes
-//    event handling for lexile selection, example toggle, and submission
-//  Error Checking: Assumes state.purpose and state.rephrase exist and that
-//    #tool-content is a valid DOM element
-//  Summary: Builds the rephrase interface, positions the lexile dropdown and
-//    submit button on the top row, conditionally reveals the example checkbox
-//    for memorize mode, and wires UI updates to initRephraseUI for processing
-///////////////////////////////////////////////////////////////////////////
-function loadRephraseUI() {
-  const content = document.getElementById("tool-content");
-
-content.innerHTML = `
-  <div class="rephrase-top-row">
-    <select id="rephrase-lexile">
-      <option value="200">200L (K)</option>
-      <option value="400">400L (1st Grade)</option>
-      <option value="550">550L (2nd Grade)</option>
-      <option value="670">670L (3rd Grade)</option>
-      <option value="770">770L (4th Grade)</option>
-      <option value="860">860L (5th Grade)</option>
-      <option value="950">950L (6th Grade)</option>
-      <option value="1000">1000L (7th Grade)</option>
-      <option value="1050">1050L (8th Grade)</option>
-      <option value="1100">1100L (9th Grade)</option>
-      <option value="1150">1150L (10th Grade)</option>
-      <option value="1200">1200L (11th Grade)</option>
-      <option value="1300">1300L (12th Grade)</option>
-    </select>
-
-    <button id="rephrase-submit">Rephrase</button>
-  </div>
-
-  <label id="rephrase-example-wrapper" style="display:none;">
-    <input type="checkbox" id="rephrase-include-example">
-    Include an example
-  </label>
-
-  <textarea id="rephrase-output"
-            class="output-box"
-            style="display:none;"></textarea>
-`;
-
-
-  if (state.purpose === "memorize") {
-    document.getElementById("rephrase-example-wrapper").style.display = "block";
-  }
-
-  initRephraseUI({
-    getState: () => state,
-    setResult: (text) => {
-      state.rephrase.result = text;
-
-      const box = document.getElementById("rephrase-output");
-      box.style.display = "block";
-      box.value = text;
-
-      // Auto-expand to fit content
-      box.style.height = "auto";
-      box.style.height = box.scrollHeight + "px";
-    }
-
-  });
-}
-
-function loadLensesUI() {
-  initLensUI();
-}
-
-
-//BOOKMARK FUNCTIONS
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: renderBookmarkList
-//  Inputs: None
-//  Outputs: Renders all bookmark annotations into the #bookmark-items list
-//  Error Checking: Assumes state.annotations already contains bookmark objects
-//  Summary: Populates the collapsible bookmark list in the sidebar by
-//    generating a button for each stored bookmark.
-///////////////////////////////////////////////////////////////////////////
-function renderBookmarkList() {
-  const container = document.getElementById("bookmark-items");
-  container.innerHTML = "";
-
-  const bookmarks = state.annotations.filter(a => a.type === "bookmark");
-
-  bookmarks.forEach(b => {
-    const btn = document.createElement("button");
-    btn.textContent = b.name;
-
-    btn.addEventListener("click", () => {
-      jumpToBookmark(b);
-    });
-
-    container.appendChild(btn);
-  });
-}
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: renderBookmarkIcons
-//  Inputs: None
-//  Outputs: Places a bookmark icon next to the first line of each bookmark
-//  Error Checking: Assumes state.annotations contains bookmark objects
-//  Summary: Renders clickable bookmark icons inside the document pane.
-//    Also re-runs layoutParagraphIcons() at the end, since several call
-//    sites call this function directly (rather than the full
-//    renderDocument()) as a lighter-weight update when only bookmarks have
-//    changed — without this, those paths would add/remove a bookmark icon
-//    but never reposition it relative to any note/provocation icon
-//    already on the same paragraph, causing icons to overlap.
-///////////////////////////////////////////////////////////////////////////
-function renderBookmarkIcons() {
-  const pane = document.getElementById("document-pane");
-  const paragraphs = pane.querySelectorAll("p");
-
-  // Remove old icons
-  pane.querySelectorAll(".bookmark-icon").forEach(icon => icon.remove());
-
-  const bookmarks = state.annotations.filter(a => a.type === "bookmark");
-
-  bookmarks.forEach(b => {
-    const p = Array.from(paragraphs).find(
-      el => Number(el.dataset.id) === b.paragraphId
-    );
-    if (!p) return;
-
-    const icon = document.createElement("span");
-    icon.textContent = "🔖";
-    icon.className = "bookmark-icon";
-    icon.dataset.id = b.id;
-    icon.dataset.startOffset = b.startOffset; // where the bookmark's selection starts (used to place the icon)
-
-    icon.style.top = "0px";
-
-    icon.addEventListener("click", () => {
-      openBookmarkPopup(b, icon);
-    });
-
-    p.appendChild(icon);
-  });
-
-  layoutParagraphIcons();
-}
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: jumpToBookmark
-//  Inputs: bookmark (object) – A bookmark containing paragraphId and offsets
-//  Outputs: Scrolls the document pane to the bookmarked text location
-//  Error Checking: Assumes the paragraph exists and offsets are valid
-//  Summary: Locates the bookmarked text range in the document and smoothly
-//    scrolls the reader pane so the bookmarked passage is brought into view.
-///////////////////////////////////////////////////////////////////////////
-function jumpToBookmark(bookmark) {
-  const pane = document.getElementById("document-pane");
-  const paragraphs = pane.querySelectorAll("p");
-
-  const p = Array.from(paragraphs).find(
-    el => Number(el.dataset.id) === bookmark.paragraphId
-  );
-
-  if (!p) return;
-
-  const range = document.createRange();
-  let walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
-  let node = walker.nextNode();
-  let offset = bookmark.startOffset;
-
-  while (node && offset > node.length) {
-    offset -= node.length;
-    node = walker.nextNode();
-  }
-
-  if (node) {
-    range.setStart(node, offset);
-    const rect = range.getBoundingClientRect();
-    pane.scrollTo({
-      top: pane.scrollTop + rect.top - pane.getBoundingClientRect().top - 40,
-      behavior: "smooth"
-    });
-  }
-}
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: openBookmarkPopup
-//  Inputs: bookmark (object), icon (DOM element)
-//  Outputs: Displays a popup positioned next to the bookmark icon,
-//           showing the bookmark name and action buttons
-//  Error Checking: Assumes the bookmark exists and the icon is valid
-//  Summary: Opens the bookmark popup UI, populates it with the bookmark’s
-//           name, and positions it relative to the clicked bookmark icon.
-///////////////////////////////////////////////////////////////////////////
-function openBookmarkPopup(bookmark, icon) {
-  const popup = document.getElementById("bookmark-popup");
-  const text = document.getElementById("bookmark-popup-text");
-
-  text.textContent = bookmark.name;
-
-  const rect = icon.getBoundingClientRect();
-  const paneRect = document.getElementById("tool-pane").getBoundingClientRect();
-
-  popup.style.left = `${rect.right + 10}px`;
-  popup.style.top = `${rect.top - paneRect.top}px`;
-  popup.style.display = "block";
-
-  popup.dataset.id = bookmark.id;
-}
-
-//NOTE FUNCTIONS
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: showNotePopup
-//  Inputs:
-//    note (object) – The note annotation object containing:
-//        • id (string) – Unique annotation identifier
-//        • paragraphId (number) – Paragraph where the note is attached
-//        • startOffset (number) – Start position of the annotated text
-//        • endOffset (number) – End position of the annotated text
-//        • noteText (string) – The user’s saved note content
-//
-//    iconElement (HTMLElement) – The DOM element representing the note
-//        icon the user clicked. Used to determine popup positioning.
-//  Outputs:
-//    Displays the note popup box (#note-popup) in the sidebar next to
-//    the annotation tools. Populates the popup with the note’s text,
-//    stores the note ID for edit/delete actions, and positions the popup
-//    relative to the sidebar container.
-//  Summary:
-//    Opens a note viewer when the user clicks a note
-//    icon. The popup shows the note text and provides edit/delete
-//    controls. This function handles positioning, populating, and
-//    activating the popup UI. It does not modify annotation data; edit
-//    and delete actions are handled by separate event listeners.
-//
-///////////////////////////////////////////////////////////////////////////
-function showNotePopup(note, iconElement) {
-  const popup = document.getElementById("note-popup");
-  const text = document.getElementById("note-popup-text");
-
-  text.textContent = note.noteText;
-  popup.dataset.noteId = note.id;
-
-  const iconRect = iconElement.getBoundingClientRect();
-  const sidebar = document.getElementById("tool-pane");
-  const sidebarRect = sidebar.getBoundingClientRect();
-
-  // Make sure popup is inside the sidebar so it uses sidebar's coordinate system
-  if (popup.parentElement !== sidebar) {
-    sidebar.appendChild(popup);
-  }
-
-  // Vertical: icon's top relative to sidebar
-  const topOffset = iconRect.top - sidebarRect.top + sidebar.scrollTop;
-
-  // Horizontal: 5px from sidebar's left edge
-  const leftOffset = 5;
-
-  popup.style.position = "absolute";
-  popup.style.left = `${leftOffset}px`;
-  popup.style.top = `${topOffset}px`;
-
-  popup.style.display = "block";
-}
-
-//LENS FUNCTIONS live in modules/lens.js now (creating, applying, navigating,
-//and deleting lenses all happen there).
-
-//MISCELLANEOUS FUNCTIONS
-
-///////////////////////////////////////////////////////////////////////////
-//  Function: captureSelection
-//  Inputs: None
-//  Outputs: Updates currentSelection with paragraph ID + offsets
-//  Summary: Uses window.getSelection() to capture selected text, maps it
-//    to the correct paragraph, and computes start/end offsets.
-///////////////////////////////////////////////////////////////////////////
-function captureSelection() {
-  const sel = window.getSelection();
-  currentSelections = [];
-
-  // SAFETY: Do nothing if document not loaded yet
-  if (state.chunks.length === 0) return;
-
-  if (!sel || sel.isCollapsed) return;
-
-  const range = sel.getRangeAt(0);
-  const selectedText = sel.toString().trim();
-  if (!selectedText) return;
-
-  const paragraphs = Array.from(document.querySelectorAll("#document-pane p"));
-  if (paragraphs.length === 0) return; // SAFETY
-
-  paragraphs.forEach(p => {
-    const paragraphRange = document.createRange();
-    paragraphRange.selectNodeContents(p);
-
-    // Safety: Only compare ranges if both share a common root
-    try {
-      const intersects =
-        range.compareBoundaryPoints(Range.END_TO_START, paragraphRange) < 0 &&
-        range.compareBoundaryPoints(Range.START_TO_END, paragraphRange) > 0;
-
-      if (!intersects) return;
-    } catch (e) {
-      return; // Skip paragraphs that cause DOM errors
-    }
-
-    const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
-    let offset = 0;
-    let startOffset = null;
-    let endOffset = null;
-
-    while (walker.nextNode()) {
-      const textNode = walker.currentNode;
-      const length = textNode.textContent.length;
-
-      if (textNode === range.startContainer) {
-        startOffset = offset + range.startOffset;
-      }
-      if (textNode === range.endContainer) {
-        endOffset = offset + range.endOffset;
-      }
-
-      offset += length;
-    }
-
-    // Measure against the paragraph's real text: the DOM text also contains
-    // the note/bookmark/provocation icon emoji appended to the paragraph.
-    const paragraphId = parseInt(p.dataset.id, 10);
-    const chunkText = getParagraph(paragraphId)?.text ?? p.textContent;
-
-    if (startOffset === null) startOffset = 0;
-    if (endOffset === null) endOffset = chunkText.length;
-    startOffset = Math.min(startOffset, chunkText.length);
-    endOffset = Math.min(endOffset, chunkText.length);
-    if (endOffset <= startOffset) return; // selection only touched an icon
-
-    currentSelections.push({
-      paragraphId,
-      startOffset,
-      endOffset,
-      text: chunkText.slice(startOffset, endOffset)
-    });
-  });
-
-
-  // Ensure rephrase state exists
-  state.rephrase = state.rephrase || {};
-
-  // Store selected text for the rephrase tool
-  state.rephrase.selectedText = selectedText;
-
-  // Store the paragraph IDs containing the selection
-  state.rephrase.selectedParagraphIds = currentSelections.map(sel => sel.paragraphId);
-
-  // ⭐ CRITICAL: Store actual paragraph text array for the Worker
-  state.rephrase.paragraphs = currentSelections.map(sel => sel.text);
-}
-
-
-
-///////////////////////////////////////////////////////////////////////////
-// UI ELEMENTS AND EVENT LISTENERS
-///////////////////////////////////////////////////////////////////////////
-
-//ANNOTATION BUTTONS
-
-//Highlight color picker
-document.getElementById("highlight-color").addEventListener("input", (e) => {
-  state.highlightColor = e.target.value;
-});
-
-//Highlight button
-document.getElementById("btn-highlight").addEventListener("click", () => {
-  if (currentSelections.length === 0) return;
-
-  currentSelections.forEach(sel => {
-    addAnnotation("highlight", sel, { color: state.highlightColor });
-  });
-
-  renderDocument();
-});
-
-//Unhighlight button
-document.getElementById("btn-unhighlight").addEventListener("click", () => {
-  if (currentSelections.length === 0) return;
-
-  currentSelections.forEach(sel => {
-    state.annotations = state.annotations.filter(a => {
-      if (a.type !== "highlight") return true;
-
-      const overlaps =
-        a.paragraphId === sel.paragraphId &&
-        a.startOffset < sel.endOffset &&
-        a.endOffset > sel.startOffset;
-
-      return !overlaps;
-    });
-  });
-
-  renderDocument();
-  window.getSelection().removeAllRanges();
-  currentSelections = [];
-});
-
-//Bookmark button
-document.getElementById("btn-bookmark").addEventListener("click", () => {
-  if (!currentSelections || currentSelections.length === 0) {
-    return;
-  }
-
-  // Only one of Bookmark/Note input should be open at a time
-  document.getElementById("note-input-container").style.display = "none";
-
-  document.getElementById("bookmark-input-container").style.display = "flex";
-});
-
-// Submit Bookmark Button (enter button)
-document.getElementById("bookmark-submit").addEventListener("click", () => {
-  const container = document.getElementById("bookmark-input-container");
-  const input = document.getElementById("bookmark-input");
-  const name = input.value.trim();
-
-  if (!name) {
-    return;
-  }
-
-  // Edit mode
-  if (container.dataset.editingId) {
-    const id = container.dataset.editingId;
-    const bookmark = state.annotations.find(a => a.id === id);
-    if (bookmark) {
-      bookmark.name = name;
-    }
-
-    // Clear editing mode
-    delete container.dataset.editingId;
-
-    input.value = "";
-    container.style.display = "none";
-
-    renderBookmarkList();
-    renderBookmarkIcons();
-    return;
-  }
-
-  // Create mode
-  if (!currentSelections || currentSelections.length === 0) return;
-
-  const firstSelection = currentSelections[0];
-  createBookmark(name, firstSelection);
-
-  input.value = "";
-  container.style.display = "none";
-
-  renderBookmarkList();
-  renderBookmarkIcons();
-});
-
-// Cancel Bookmark Button
-document.getElementById("bookmark-cancel").addEventListener("click", () => {
-  const container = document.getElementById("bookmark-input-container");
-  const input = document.getElementById("bookmark-input");
-
-  input.value = "";
-  delete container.dataset.editingId;
-  container.style.display = "none";
-});
-
-
-
-// Toggle to expand/collapse bookmark list
-document.getElementById("bookmark-toggle").addEventListener("click", () => {
-  const items = document.getElementById("bookmark-items");
-  const toggle = document.getElementById("bookmark-toggle");
-
-  if (items.style.display === "none") {
-    items.style.display = "block";
-    toggle.textContent = "Bookmarks ▲";
-  } else {
-    items.style.display = "none";
-    toggle.textContent = "Bookmarks ▼";
-  }
-});
-
-// Close Bookmark button
-document.getElementById("bookmark-close").addEventListener("click", () => {
-  document.getElementById("bookmark-popup").style.display = "none";
-});
-
-// Delete Bookmark button
-document.getElementById("bookmark-delete").addEventListener("click", () => {
-  const popup = document.getElementById("bookmark-popup");
-  const id = popup.dataset.id;
-
-  state.annotations = state.annotations.filter(a => a.id !== id);
-
-  popup.style.display = "none";
-  renderBookmarkList();
-  renderBookmarkIcons();
-});
-
-// Edit Bookmark button
-document.getElementById("bookmark-edit").addEventListener("click", () => {
-  const popup = document.getElementById("bookmark-popup");
-  const id = popup.dataset.id;
-
-  const bookmark = state.annotations.find(a => a.id === id);
-  if (!bookmark) return;
-
-  // Close popup
-  popup.style.display = "none";
-
-  // Open the existing bookmark input box
-  const container = document.getElementById("bookmark-input-container");
-  const input = document.getElementById("bookmark-input");
-
-  container.style.display = "flex";
-
-  // Pre-fill with current bookmark name
-  input.value = bookmark.name;
-
-  // Mark that we are editing instead of creating
-  container.dataset.editingId = id;
-});
-
-
-// Add Note button
-document.getElementById("btn-add-note").addEventListener("click", () => {
-  if (currentSelections.length === 0) {
-    return;
-  }
-
-  // Only one of Bookmark/Note input should be open at a time
-  document.getElementById("bookmark-input-container").style.display = "none";
-
-  delete document.getElementById("note-input-container").dataset.editingId;
-  document.getElementById("note-input-container").style.display = "flex";
-  document.getElementById("note-input").value = "";
-});
-
-// Submit Note button (enter button). Handles both creating a new note and
-// saving an edit to an existing one, depending on whether editingId is set.
-document.getElementById("note-submit").addEventListener("click", () => {
-  const container = document.getElementById("note-input-container");
-  const noteText = document.getElementById("note-input").value.trim();
-  if (!noteText) {
-    return;
-  }
-
-  if (container.dataset.editingId) {
-    const note = state.annotations.find(a => a.id === container.dataset.editingId);
-    if (note) note.noteText = noteText;
-    delete container.dataset.editingId;
-  } else {
-    // Attach note ONLY to the first selected paragraph
-    const firstSelection = currentSelections[0];
-    if (firstSelection) {
-      addAnnotation("note", firstSelection, { noteText });
-    }
-  }
-
-  container.style.display = "none";
-  renderDocument();
-});
-
-// Cancel Note button
-document.getElementById("note-cancel").addEventListener("click", () => {
-  const container = document.getElementById("note-input-container");
-  document.getElementById("note-input").value = "";
-  delete container.dataset.editingId;
-  container.style.display = "none";
-});
-
-
-// Edit Note button
-document.getElementById("note-edit").addEventListener("click", () => {
-  const popup = document.getElementById("note-popup");
-  const note = state.annotations.find(a => a.id === popup.dataset.noteId);
-  if (!note) return;
-
-  const container = document.getElementById("note-input-container");
-  container.dataset.editingId = note.id;
-  container.style.display = "flex";
-  document.getElementById("note-input").value = note.noteText;
-
-  popup.style.display = "none";
-});
-
-// Delete Note button
-document.getElementById("note-delete").addEventListener("click", () => {
-  const popup = document.getElementById("note-popup");
-  const noteId = popup.dataset.noteId;
-
-  // Remove annotation from state
-  state.annotations = state.annotations.filter(a => a.id !== noteId);
-
-  // Hide popup
-  popup.style.display = "none";
-
-  // Re-render document so the icon disappears
-  renderDocument();
-});
-
-// Close Note button
-document.getElementById("note-close").addEventListener("click", () => {
-  const popup = document.getElementById("note-popup");
-  popup.style.display = "none";
-});
-
-// ADDITIONAL EVENT LISTENERS
-
-// Captures text selection when the user releases the mouse button
-// Clicking a highlighted lens sentence shows why it matched.
-document.getElementById("document-pane").addEventListener("click", handleDocumentPaneClick);
-
-document.getElementById("document-pane").addEventListener("mouseup", () => {
-  if (state.chunks.length === 0) return;  // Safety
-  captureSelection();
-});
-
-// Touch and keyboard selections.
-//  Selecting with a finger (long-press, then dragging the selection handles)
-//  or with Shift+arrow keys never fires "mouseup", so the listener above
-//  alone misses them. Two additions cover those cases:
-//
-//  1. "selectionchange" fires whenever the browser's selection moves, however
-//     it was made. It fires many times while a handle is being dragged, so it
-//     is debounced, and it only ever CAPTURES (a non-empty selection that sits
-//     inside the document pane). It never clears: on iPadOS, tapping a sidebar
-//     button (Highlight, Bookmark...) can collapse the selection before the
-//     button's click lands, and clearing then would make the button do nothing.
-//  2. A tap (touchend) inside the pane re-reads the selection after a short
-//     delay, mirroring what mouseup does for a click: a tap that dismisses the
-//     selection clears it, one that finishes a selection captures it.
-let selectionChangeTimer = null;
-
-document.addEventListener("selectionchange", () => {
-  clearTimeout(selectionChangeTimer);
-  selectionChangeTimer = setTimeout(() => {
-    if (state.chunks.length === 0) return;
-
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
-
-    const pane = document.getElementById("document-pane");
-    if (!pane.contains(sel.anchorNode) || !pane.contains(sel.focusNode)) return;
-
-    captureSelection();
-  }, 200);
-});
-
-document.getElementById("document-pane").addEventListener("touchend", () => {
-  setTimeout(() => {
-    if (state.chunks.length === 0) return;
-    captureSelection();
-  }, 300);
-});
 
 ///////////////////////////////////////////////////////////////////////////
 //  Function: extractTextFromPdf
-//  Inputs: arrayBuffer (ArrayBuffer) — raw bytes of a .pdf file
-//  Outputs: Promise<string> — extracted text, with a best-effort attempt
-//    at paragraph breaks
-//  Summary: PDFs don't have explicit paragraph markup like .docx does —
-//    pdf.js only gives us positioned text runs on a page. This groups
-//    runs into lines by shared y-position, then inserts a paragraph break
-//    wherever the vertical gap between consecutive lines is noticeably
-//    larger than the page's typical line spacing (a proxy for "this is a
-//    new paragraph, not just the next line of the same one"). On top of
-//    that base layout-detection pass, four targeted cleanup heuristics
-//    handle the most common PDF-extraction artifacts:
-//      1. Line-wrap hyphens ("mathe-" + "matics") are rejoined into one
-//         word instead of left as a literal hyphen.
-//      2. Footnote-marker digits (small superscript numbers embedded mid-
-//         sentence) are dropped using pdf.js's own font-size data, before
-//         they ever get glued into a line.
-//      3. Running headers/footers/page numbers that repeat near-
-//         identically across multiple pages (only checked among
-//         paragraphs that sit at the very start/end of their page,
-//         where headers/footers actually land) are detected and removed.
-//      4. A drop-cap artifact at the very start of a paragraph (e.g. a
-//         stylized "T" rendered as a separate text run from "he term...",
-//         producing "T he term...") is merged back together.
-//    None of these are perfect — multi-column layouts, tables, or unusual
-//    formatting may still come out imperfectly and could need manual
-//    cleanup after upload. Scanned/image-only PDFs have no embedded text
-//    at all and will produce nothing.
+//  Inputs: arrayBuffer — raw bytes of a .pdf file
+//  Outputs: Promise<string> — the text, with paragraphs separated by blank
+//    lines
+//  Summary: pdf.js only gives positioned text runs, so runs are grouped into
+//    lines by y-position, and a paragraph break is inserted wherever the gap
+//    between lines is well above the page's typical line spacing. Four
+//    heuristics clean up common extraction artifacts:
+//      1. Hyphens at line wraps ("mathe-" + "matics") are rejoined.
+//      2. Footnote-marker digits are dropped (small pure-digit items).
+//      3. Running headers, footers, and page numbers repeating across pages
+//         are removed.
+//      4. Drop caps split into their own run ("T he term") are merged back.
+//    Multi-column layouts and tables may still need manual cleanup, and
+//    scanned (image-only) PDFs have no text to extract.
 ///////////////////////////////////////////////////////////////////////////
 async function extractTextFromPdf(arrayBuffer) {
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-  // Each entry is one paragraph, tagged with which page it came from and
-  // whether it was the first or last paragraph extracted on that page —
-  // used later by the header/footer detection pass (fix #3).
+  // One entry per paragraph, tagged with its page and whether it was the
+  // first or last on that page (used by header/footer detection, fix 3).
   const allEntries = [];
 
-  // Fix #1: rejoin a hyphenated line-wrap word instead of leaving the
-  // literal hyphen + line break in place.
+  // Fix 1
   function joinLine(paragraph, nextLineText) {
     const trimmedCurrent = paragraph.replace(/\s+$/, "");
     if (/[a-z]-$/.test(trimmedCurrent) && /^[a-z]/.test(nextLineText.trimStart())) {
@@ -1721,9 +609,8 @@ async function extractTextFromPdf(arrayBuffer) {
     return paragraph + " " + nextLineText;
   }
 
-  // Fix #4: a single capital letter, a space, then a lowercase letter at
-  // the very start of a paragraph is almost never real English — it's the
-  // signature of a drop-cap rendered as its own separate text run.
+  // Fix 4: a capital, a space, then a lowercase letter at the start of a
+  // paragraph is almost never real English.
   function fixDropCap(text) {
     return text.replace(/^([A-Z]) ([a-z])/, "$1$2");
   }
@@ -1732,11 +619,8 @@ async function extractTextFromPdf(arrayBuffer) {
     const page = await pdf.getPage(pageNum);
     const content = await page.getTextContent();
 
-    // Fix #2: drop likely footnote-marker items before grouping into
-    // lines. Footnote markers are almost always small superscript digits —
-    // a noticeably smaller font than the page's dominant body-text size —
-    // so use pdf.js's own per-item height instead of guessing from text
-    // patterns alone.
+    // Fix 2: footnote markers are small superscript digits, so compare each
+    // item's height with the page's dominant text height.
     const nonEmptyItems = content.items.filter(item => item.str.trim().length > 0);
     const heightCounts = new Map();
     nonEmptyItems.forEach(item => {
@@ -1759,7 +643,7 @@ async function extractTextFromPdf(arrayBuffer) {
       return !(isPureDigits && isNoticeablySmaller);
     });
 
-    // Group remaining text items into lines based on shared y-position (baseline).
+    // Group items into lines by shared baseline y-position.
     const lines = [];
     let currentLine = null;
 
@@ -1775,8 +659,7 @@ async function extractTextFromPdf(arrayBuffer) {
     if (currentLine) lines.push(currentLine);
     if (lines.length === 0) continue;
 
-    // Typical line-to-line spacing on this page, used to detect a gap
-    // large enough to be a paragraph break rather than just the next line.
+    // A gap well above the median line spacing marks a paragraph break.
     const deltas = [];
     for (let i = 1; i < lines.length; i++) {
       deltas.push(Math.abs(lines[i - 1].y - lines[i].y));
@@ -1809,13 +692,10 @@ async function extractTextFromPdf(arrayBuffer) {
       });
   }
 
-  // Fix #3: detect and remove running headers/footers/page numbers.
-  // Only paragraphs that sat at the very start or end of their page are
-  // considered candidates, so a genuinely repeated sentence elsewhere in
-  // the body text is never mistaken for a header/footer. Leading/trailing
-  // digits (page numbers) are stripped before comparing, so e.g. "2 journal
-  // of world history, spring 1994" and "3 journal of world history, spring
-  // 1994" are recognized as the same repeating footer.
+  // Fix 3: only paragraphs at the very start or end of a page are header or
+  // footer candidates, so repeated body text is never removed. Leading and
+  // trailing digits are stripped before comparing, so "2 journal of world
+  // history" and "3 journal of world history" match.
   function normalizeForRepeatDetection(text) {
     return text
       .toLowerCase()
@@ -1825,7 +705,7 @@ async function extractTextFromPdf(arrayBuffer) {
       .trim();
   }
 
-  const edgePageSets = new Map(); // normalized text -> Set of page numbers it appeared on
+  const edgePageSets = new Map(); // normalized text -> pages it appeared on
   allEntries.forEach(entry => {
     if (!entry.isPageEdge) return;
     const norm = normalizeForRepeatDetection(entry.text);
@@ -1853,11 +733,11 @@ async function extractTextFromPdf(arrayBuffer) {
 
 ///////////////////////////////////////////////////////////////////////////
 //  Function: extractTextFromDocx
-//  Inputs: arrayBuffer (ArrayBuffer) — raw bytes of a .docx file
-//  Outputs: Promise<string> — extracted text, one paragraph per line
-//  Summary: .docx files have real paragraph markup, so mammoth.js's raw
-//    text extraction is much more reliable than the PDF heuristic above —
-//    each Word paragraph comes back on its own line already.
+//  Inputs: arrayBuffer — raw bytes of a .docx file
+//  Outputs: Promise<string> — the text, with paragraphs separated by blank
+//    lines
+//  Summary: .docx has real paragraph markup, so mammoth.js is far more
+//    reliable than the PDF heuristics.
 ///////////////////////////////////////////////////////////////////////////
 async function extractTextFromDocx(arrayBuffer) {
   const result = await mammoth.extractRawText({ arrayBuffer });
@@ -1871,11 +751,10 @@ async function extractTextFromDocx(arrayBuffer) {
 ///////////////////////////////////////////////////////////////////////////
 //  Function: deriveTitleFromText
 //  Inputs: text — the full document text
-//  Outputs: A short, human-readable title guessed from the first line
-//  Summary: Documents aren't given an explicit title on upload, so this
-//    takes the first non-empty line (trimmed to a reasonable length) as a
-//    stand-in. Good enough for most pasted articles/essays, which tend to
-//    open with a title line; imperfect for documents that don't.
+//  Outputs: A title taken from the first non-empty line, trimmed to 80
+//    characters
+//  Summary: Documents aren't titled on upload. This suits articles and
+//    essays that open with a title line, and is imperfect otherwise.
 ///////////////////////////////////////////////////////////////////////////
 function deriveTitleFromText(text) {
   const firstLine = text.split("\n").map(l => l.trim()).find(l => l.length > 0) || "Untitled document";
@@ -1886,9 +765,9 @@ function deriveTitleFromText(text) {
 //  Function: createDocumentAndEnterReader
 //  Inputs: text, purpose, analysisType
 //  Outputs: Loads the document into state, creates its Firestore record,
-//    and shows the reader screen
-//  Summary: Shared by both the paste-text and file-upload paths, since
-//    both need to do the same thing once they have extracted text.
+//    and shows the reader
+//  Summary: Shared by the paste-text and file-upload paths. If the record
+//    can't be created, the student can still read, but Save won't work.
 ///////////////////////////////////////////////////////////////////////////
 async function createDocumentAndEnterReader(text, purpose, analysisType) {
   loadDocument(text, purpose, analysisType);
@@ -1914,14 +793,13 @@ async function createDocumentAndEnterReader(text, purpose, analysisType) {
 
   resetReaderView();
 
-  // The reader screen has to be visible BEFORE rendering: icon placement
-  // measures where text is drawn, and a hidden screen has no layout.
+  // The reader must be visible before rendering: icon placement measures
+  // where text is drawn, and a hidden screen has no layout.
   showScreen("reader");
   renderDocument();
   renderBookmarkList();
 }
 
-//Allows the user to upload a .txt, .pdf, or .docx file instead of pasting text
 document.getElementById("file-input").addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
@@ -1960,8 +838,7 @@ document.getElementById("file-input").addEventListener("change", async (event) =
   const purpose = document.getElementById("purpose-select").value;
   const analysisType = document.getElementById("analysis-type-select").value;
 
-  // Prevent empty documents (also catches PDFs with no extractable text,
-  // e.g. scanned/image-only pages)
+  // Also catches scanned PDFs, which have no extractable text.
   if (!text || !text.trim()) {
     alert("No readable text was found in that file. If it's a scanned or image-only PDF, this tool can't extract text from it — try pasting the text directly instead.");
     return;
@@ -1970,13 +847,11 @@ document.getElementById("file-input").addEventListener("change", async (event) =
   await createDocumentAndEnterReader(text, purpose, analysisType);
 });
 
-// Start Reading button
 document.getElementById("start-reading").addEventListener("click", async () => {
   const text = document.getElementById("document-input").value;
   const purpose = document.getElementById("purpose-select").value;
   const analysisType = document.getElementById("analysis-type-select").value;
 
-  // Prevent empty documents
   if (!text.trim()) {
     alert("Please paste text or upload a .txt file before continuing.");
     return;
@@ -1985,10 +860,1018 @@ document.getElementById("start-reading").addEventListener("click", async () => {
   await createDocumentAndEnterReader(text, purpose, analysisType);
 });
 
-// Lets other modules (e.g. lens.js's "Add selection") read what the
-// student currently has selected in the document.
+///////////////////////////////////////////////////////////////////////////
+// Document loading and rendering
+///////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: loadDocument
+//  Inputs: text, purpose ("analysis" | "memorize"), analysisType
+//  Outputs: Resets the per-document state, then stores the purpose and
+//    splits the text into paragraph chunks
+//  Summary: The chunks are the structural base for lenses, provocations,
+//    annotations, and rephrasing. Starting from a clean slate stops
+//    annotations, lenses, and provocations of the previously open document
+//    carrying over (and getting saved) into this one.
+///////////////////////////////////////////////////////////////////////////
+function loadDocument(text, purpose, analysisType) {
+  state.currentDocId = null;
+  state.annotations = [];
+  state.annotationsSummary = null;
+  state.provocations = [];
+  state.lenses = [];
+  state.activeLensId = null;
+  state.lensCurrentHitId = null;
+  resetTransientState();
+
+  state.purpose = purpose;
+  state.analysisType = purpose === "analysis" ? (analysisType || "literary") : "literary";
+
+  const normalized = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .trim();
+
+  // Every blank line or single newline starts a new paragraph.
+  const paragraphs = normalized
+    .split(/\n\s*\n|\n+/)
+    .map(p => p.trim())
+    .filter(p => p.length > 0);
+
+  state.chunks = paragraphs.map((p, i) => ({
+    id: i,
+    text: p
+  }));
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: getParagraph
+//  Inputs: id (a paragraph id)
+//  Outputs: The matching chunk, or undefined
+///////////////////////////////////////////////////////////////////////////
+function getParagraph(id) {
+  return state.chunks.find(chunk => chunk.id === id);
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: escapeHtml
+//  Inputs: str
+//  Outputs: The string with &, <, >, and " escaped
+//  Summary: Document text is untrusted, so it must be escaped before going
+//    into innerHTML.
+///////////////////////////////////////////////////////////////////////////
+function escapeHtml(str) {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: buildParagraphHtml
+//  Inputs: text (the paragraph), highlights (the student's highlight
+//    annotations), lensHits (hits from the applied lens), lens
+//  Outputs: An HTML string for the paragraph
+//  Summary: Highlights and lens hits can overlap in any way, so the text is
+//    cut at every boundary any of them has, and each piece is styled by
+//    whichever highlight and/or lens hit covers it. The lens shading is the
+//    outer span and the highlight the inner one, so both stay visible.
+///////////////////////////////////////////////////////////////////////////
+function buildParagraphHtml(text, highlights, lensHits, lens) {
+  const len = text.length;
+  const clamp = n => Math.max(0, Math.min(len, n));
+
+  const points = new Set([0, len]);
+  highlights.forEach(h => { points.add(clamp(h.startOffset)); points.add(clamp(h.endOffset)); });
+  lensHits.forEach(h => { points.add(clamp(h.startOffset)); points.add(clamp(h.endOffset)); });
+  const cuts = Array.from(points).sort((a, b) => a - b);
+
+  let html = "";
+
+  for (let i = 0; i < cuts.length - 1; i++) {
+    const a = cuts[i];
+    const b = cuts[i + 1];
+    if (b <= a) continue;
+
+    let piece = escapeHtml(text.slice(a, b));
+
+    const highlight = highlights.find(h => h.startOffset <= a && h.endOffset >= b);
+    if (highlight) {
+      const color = highlight.color || "#ffff00";
+      piece = `<span class="highlighted" style="background-color:${color};">${piece}</span>`;
+    }
+
+    // Where lens hits overlap, a strong one wins over a partial one.
+    const covering = lensHits.filter(h => h.startOffset <= a && h.endOffset >= b);
+    const hit = covering.find(h => h.strength === "strong") || covering[0];
+    if (hit && lens) {
+      const current = hit.id === state.lensCurrentHitId ? " lens-hit-current" : "";
+      piece = `<span class="lens-hit${current}" data-hit-id="${hit.id}" style="${lensHitStyle(lens.color, hit.strength)}">${piece}</span>`;
+    }
+
+    html += piece;
+  }
+
+  return html;
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: renderDocument
+//  Inputs: None (reads state.chunks and the annotations, provocations, and
+//    applied lens)
+//  Outputs: Rebuilds #document-pane with one <p> per chunk (data-id is the
+//    chunk id), plus highlights, lens shading, and note, provocation, and
+//    bookmark icons
+//  Summary: Rebuilding resets scrolling, so the scroll position is restored.
+///////////////////////////////////////////////////////////////////////////
+function renderDocument() {
+  const pane = document.getElementById("document-pane");
+  const savedScroll = pane.scrollTop;
+  pane.innerHTML = "";
+
+  const activeLens = state.lenses.find(l => l.id === state.activeLensId) || null;
+
+  state.chunks.forEach(chunk => {
+    const p = document.createElement("p");
+    p.dataset.id = chunk.id;
+
+    // Highlights and lens hits are drawn as spans over the text; a paragraph
+    // with neither stays plain text.
+    const highlights = state.annotations
+      .filter(a => a.paragraphId === chunk.id && a.type === "highlight")
+      .sort((a, b) => a.startOffset - b.startOffset);
+
+    const lensHits = activeLens
+      ? activeLens.hits.filter(h => h.paragraphId === chunk.id)
+      : [];
+
+    if (highlights.length === 0 && lensHits.length === 0) {
+      p.textContent = chunk.text;
+    } else {
+      p.innerHTML = buildParagraphHtml(chunk.text, highlights, lensHits, activeLens);
+    }
+
+    // A paragraph containing a lens hit gets a light wash of the lens color,
+    // lighter than the partial-match shade.
+    if (activeLens && lensHits.length > 0) {
+      p.classList.add("lens-paragraph");
+      p.style.backgroundColor = lensParagraphColor(activeLens.color);
+    }
+
+    // Green for an incorrectly answered provocation; takes priority over the
+    // lens wash.
+    const provForParagraph = state.provocations.filter(
+      prov => prov.paragraphId === chunk.id && prov.status === "incorrect"
+    );
+
+    if (provForParagraph.length > 0) {
+      p.style.backgroundColor = "#b7ff8f";
+      p.dataset.provIncorrect = "1"; // lets lens.js skip this paragraph when recoloring
+    }
+
+    // Note icons
+    const notes = state.annotations.filter(a =>
+      a.paragraphId === chunk.id && a.type === "note"
+    );
+
+    notes.forEach(note => {
+      const icon = document.createElement("span");
+      icon.classList.add("note-icon");
+      icon.dataset.noteId = note.id;
+      icon.dataset.startOffset = note.startOffset; // used to place the icon beside its selection
+      icon.textContent = "📝";
+
+      icon.addEventListener("click", (event) => {
+        event.stopPropagation();
+        showNotePopup(note, icon);
+      });
+
+      p.appendChild(icon);
+    });
+
+    // Provocation icons
+    const provs = state.provocations.filter(
+      prov => prov.paragraphId === chunk.id
+    );
+
+    provs.forEach(prov => {
+      const icon = document.createElement("span");
+      icon.classList.add("provocation-icon");
+      icon.dataset.provId = prov.id;
+      icon.textContent = "💡";
+
+      icon.style.position = "absolute";
+      icon.style.right = "0px";
+      icon.style.top = "0px";
+
+      icon.addEventListener("click", (event) => {
+        event.stopPropagation();
+
+        window.dispatchEvent(new CustomEvent("provocation:selected", {
+          detail: { provId: prov.id }
+        }));
+      });
+
+      p.appendChild(icon);
+    });
+
+    pane.appendChild(p);
+  });
+
+  renderBookmarkIcons();
+  pane.scrollTop = savedScroll;
+}
+
+///////////////////////////////////////////////////////////////////////////
+// Paragraph icons
+//  Note, provocation, and bookmark icons are added by separate code, so none
+//  knows where the others sit. layoutParagraphIcons() runs last and places
+//  them all.
+///////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: getTextOffsetTop
+//  Inputs: p (paragraph element), charOffset (index into the paragraph's
+//    real text), icon (the icon being placed)
+//  Outputs: Distance in px from the paragraph's top edge to the line holding
+//    the character at charOffset, adjusted to center the icon on that line
+//  Summary: Walks the paragraph's text nodes (skipping icon emoji) and
+//    measures where the character is drawn. Highlight and lens spans split
+//    the text into several nodes, so the offset is counted across all of them.
+///////////////////////////////////////////////////////////////////////////
+function getTextOffsetTop(p, charOffset, icon) {
+  const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT, {
+    acceptNode: node =>
+      node.parentElement.closest(".note-icon, .provocation-icon, .bookmark-icon")
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT
+  });
+
+  let remaining = charOffset;
+  let node = null;
+  let last = null;
+  while ((node = walker.nextNode())) {
+    last = node;
+    if (remaining < node.length) break;
+    remaining -= node.length;
+    node = null;
+  }
+
+  const target = node || last;
+  if (!target || target.length === 0) return 0;
+
+  const start = node ? remaining : target.length - 1;
+  const range = document.createRange();
+  range.setStart(target, start);
+  range.setEnd(target, start + 1);
+
+  const rect = range.getClientRects()[0];
+  if (!rect) return 0;
+
+  const centering = Math.max(0, ((icon.offsetHeight || rect.height) - rect.height) / 2);
+  return Math.max(0, rect.top - p.getBoundingClientRect().top - centering);
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: layoutParagraphIcons
+//  Inputs: None
+//  Outputs: Positions every icon in the document pane and sizes each
+//    paragraph's right-hand gutter to fit its icons
+//  Summary: Icons line up right to left along the paragraph's right edge.
+//    Note and bookmark icons sit beside the first line of the text they were
+//    created from; provocation icons stay at the top, since they belong to
+//    the whole paragraph. Done in three passes (size gutters, measure,
+//    position) so the browser lays out once, not once per paragraph.
+///////////////////////////////////////////////////////////////////////////
+function layoutParagraphIcons() {
+  const pane = document.getElementById("document-pane");
+  if (!pane) return;
+  const paragraphs = Array.from(pane.querySelectorAll("p"));
+
+  const ICON_STEP_PX = 22;   // horizontal spacing between icons
+  const BASE_GUTTER_PX = 24; // gutter width for 0-1 icons
+
+  // Pass 1: gutters first, since their width changes how paragraphs wrap.
+  const layouts = paragraphs.map(p => {
+    const icons = Array.from(
+      p.querySelectorAll(".note-icon, .provocation-icon, .bookmark-icon")
+    );
+    const neededWidth = icons.length * ICON_STEP_PX + 4;
+    p.style.paddingRight = `${Math.max(BASE_GUTTER_PX, neededWidth)}px`;
+    return { p, icons };
+  });
+
+  // Pass 2: measure.
+  layouts.forEach(layout => {
+    layout.tops = layout.icons.map(icon => {
+      if (icon.classList.contains("provocation-icon")) return 0;
+      if (icon.dataset.startOffset === undefined) return 0;
+      return getTextOffsetTop(layout.p, Number(icon.dataset.startOffset), icon);
+    });
+  });
+
+  // Pass 3: position.
+  layouts.forEach(({ icons, tops }) => {
+    icons.forEach((icon, index) => {
+      icon.style.position = "absolute";
+      icon.style.top = `${tops[index]}px`;
+      icon.style.right = `${index * ICON_STEP_PX}px`;
+    });
+  });
+
+  // New gutters can change wrapping, which moves every lens hit, so the
+  // minimap is refreshed once layout has settled.
+  refreshLensMinimap();
+}
+
+// Resizing re-wraps paragraphs, which moves the selected lines.
+window.addEventListener("resize", layoutParagraphIcons);
+
+///////////////////////////////////////////////////////////////////////////
+// Sidebar tabs
+///////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: setupTabs
+//  Inputs: None
+//  Outputs: Wires up tab switching in the sidebar
+//  Summary: Highlights the clicked tab, points the "?" button at its
+//    tutorial, and loads that tab's UI. The annotation tools show only on
+//    the Annotations tab. Called once at startup, since the tab buttons are
+//    static HTML.
+///////////////////////////////////////////////////////////////////////////
+function setupTabs() {
+  const tabs = document.querySelectorAll("#tool-tabs button");
+  const content = document.getElementById("tool-content");
+  const annotationTools = document.getElementById("annotation-tools");
+
+  tabs.forEach(tab => {
+    tab.addEventListener("click", () => {
+      tabs.forEach(t => t.classList.remove("active"));
+      tab.classList.add("active");
+
+      setHelpTab(tab.dataset.tab);
+
+      content.innerHTML = "";
+
+      if (tab.dataset.tab === "annotations") {
+        annotationTools.style.display = "block";
+        loadAnnotationsUI();
+      } else {
+        annotationTools.style.display = "none";
+      }
+
+      if (tab.dataset.tab === "rephrase") {
+        loadRephraseUI();
+        return;
+      }
+
+      if (tab.dataset.tab === "lenses") {
+        loadLensesUI();
+        return;
+      }
+
+      if (tab.dataset.tab === "provocations") {
+        loadProvocationsUI();
+        return;
+      }
+    });
+  });
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: resetReaderView
+//  Inputs: None
+//  Outputs: Puts the reader's chrome back to a blank start: no active tab,
+//    empty sidebar, annotation tools hidden, popups closed, document
+//    scrolled to the top
+///////////////////////////////////////////////////////////////////////////
+function resetReaderView() {
+  document.querySelectorAll("#tool-tabs button").forEach(t => t.classList.remove("active"));
+  document.getElementById("tool-content").innerHTML = "";
+  document.getElementById("annotation-tools").style.display = "none";
+  hideHelp();
+  document.getElementById("note-popup").style.display = "none";
+  document.getElementById("bookmark-popup").style.display = "none";
+  document.getElementById("save-status").textContent = "";
+  document.getElementById("document-pane").scrollTop = 0;
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: resetTransientState
+//  Inputs: None
+//  Outputs: Clears the current selection and the Rephrase draft
+//  Summary: Stops working state of one document leaking into the next.
+///////////////////////////////////////////////////////////////////////////
+function resetTransientState() {
+  currentSelections = [];
+  state.rephrase = {
+    selectedParagraphIds: [],
+    selectedText: "",
+    paragraphs: [],
+    lexile: null,
+    includeExample: false,
+    result: ""
+  };
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: loadRephraseUI
+//  Inputs: None
+//  Outputs: Injects the Rephrase tab into #tool-content and wires it to
+//    initRephraseUI
+//  Summary: The "Include an example" checkbox appears only in Memorize mode.
+///////////////////////////////////////////////////////////////////////////
+function loadRephraseUI() {
+  const content = document.getElementById("tool-content");
+
+  content.innerHTML = `
+    <div class="rephrase-top-row">
+      <select id="rephrase-lexile">
+        <option value="200">200L (K)</option>
+        <option value="400">400L (1st Grade)</option>
+        <option value="550">550L (2nd Grade)</option>
+        <option value="670">670L (3rd Grade)</option>
+        <option value="770">770L (4th Grade)</option>
+        <option value="860">860L (5th Grade)</option>
+        <option value="950">950L (6th Grade)</option>
+        <option value="1000">1000L (7th Grade)</option>
+        <option value="1050">1050L (8th Grade)</option>
+        <option value="1100">1100L (9th Grade)</option>
+        <option value="1150">1150L (10th Grade)</option>
+        <option value="1200">1200L (11th Grade)</option>
+        <option value="1300">1300L (12th Grade)</option>
+      </select>
+
+      <button id="rephrase-submit">Rephrase</button>
+    </div>
+
+    <label id="rephrase-example-wrapper" style="display:none;">
+      <input type="checkbox" id="rephrase-include-example">
+      Include an example
+    </label>
+
+    <textarea id="rephrase-output"
+              class="output-box"
+              style="display:none;"></textarea>
+  `;
+
+  if (state.purpose === "memorize") {
+    document.getElementById("rephrase-example-wrapper").style.display = "block";
+  }
+
+  initRephraseUI({
+    getState: () => state,
+    setResult: (text) => {
+      state.rephrase.result = text;
+
+      const box = document.getElementById("rephrase-output");
+      box.style.display = "block";
+      box.value = text;
+
+      // Grow the box to fit its content.
+      box.style.height = "auto";
+      box.style.height = box.scrollHeight + "px";
+    }
+  });
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: loadLensesUI
+//  Inputs: None
+//  Outputs: Loads the Lenses tab (all lens logic lives in lens.js)
+///////////////////////////////////////////////////////////////////////////
+function loadLensesUI() {
+  initLensUI();
+}
+
+///////////////////////////////////////////////////////////////////////////
+// Text selection
+///////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: captureSelection
+//  Inputs: None
+//  Outputs: Fills currentSelections with a paragraph id and offsets for each
+//    paragraph the selection touches, and stores the selected text for the
+//    Rephrase tool
+///////////////////////////////////////////////////////////////////////////
+function captureSelection() {
+  const sel = window.getSelection();
+  currentSelections = [];
+
+  if (state.chunks.length === 0) return;
+  if (!sel || sel.isCollapsed) return;
+
+  const range = sel.getRangeAt(0);
+  const selectedText = sel.toString().trim();
+  if (!selectedText) return;
+
+  const paragraphs = Array.from(document.querySelectorAll("#document-pane p"));
+  if (paragraphs.length === 0) return;
+
+  paragraphs.forEach(p => {
+    const paragraphRange = document.createRange();
+    paragraphRange.selectNodeContents(p);
+
+    // Comparing ranges can throw if they don't share a root.
+    try {
+      const intersects =
+        range.compareBoundaryPoints(Range.END_TO_START, paragraphRange) < 0 &&
+        range.compareBoundaryPoints(Range.START_TO_END, paragraphRange) > 0;
+
+      if (!intersects) return;
+    } catch (e) {
+      return;
+    }
+
+    const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+    let offset = 0;
+    let startOffset = null;
+    let endOffset = null;
+
+    while (walker.nextNode()) {
+      const textNode = walker.currentNode;
+      const length = textNode.textContent.length;
+
+      if (textNode === range.startContainer) {
+        startOffset = offset + range.startOffset;
+      }
+      if (textNode === range.endContainer) {
+        endOffset = offset + range.endOffset;
+      }
+
+      offset += length;
+    }
+
+    // Measure against the chunk's real text: the DOM text also includes the
+    // icon emoji appended to the paragraph.
+    const paragraphId = parseInt(p.dataset.id, 10);
+    const chunkText = getParagraph(paragraphId)?.text ?? p.textContent;
+
+    if (startOffset === null) startOffset = 0;
+    if (endOffset === null) endOffset = chunkText.length;
+    startOffset = Math.min(startOffset, chunkText.length);
+    endOffset = Math.min(endOffset, chunkText.length);
+    if (endOffset <= startOffset) return; // the selection only touched an icon
+
+    currentSelections.push({
+      paragraphId,
+      startOffset,
+      endOffset,
+      text: chunkText.slice(startOffset, endOffset)
+    });
+  });
+
+  state.rephrase = state.rephrase || {};
+  state.rephrase.selectedText = selectedText;
+  state.rephrase.selectedParagraphIds = currentSelections.map(sel => sel.paragraphId);
+  // The paragraphs array is what the worker's /rephrase route receives.
+  state.rephrase.paragraphs = currentSelections.map(sel => sel.text);
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: getCurrentSelections
+//  Inputs: None
+//  Outputs: The student's current selection (see currentSelections)
+//  Summary: Lets other modules, e.g. lens.js's "Add selection", read it.
+///////////////////////////////////////////////////////////////////////////
 function getCurrentSelections() {
   return currentSelections;
 }
+
+// A click on a lens-highlighted sentence shows why it matched.
+document.getElementById("document-pane").addEventListener("click", handleDocumentPaneClick);
+
+document.getElementById("document-pane").addEventListener("mouseup", () => {
+  if (state.chunks.length === 0) return;
+  captureSelection();
+});
+
+// Touch and keyboard selections never fire "mouseup", so two more listeners
+// cover them:
+//  - "selectionchange" fires whenever the selection moves, however it was
+//    made. It fires many times while a handle is dragged, so it's debounced.
+//    It only captures a non-empty selection inside the document pane and
+//    never clears one: on iPadOS, tapping a sidebar button (Highlight,
+//    Bookmark...) can collapse the selection before the click lands, and
+//    clearing would make the button do nothing.
+//  - A tap (touchend) in the pane re-reads the selection after a short
+//    delay, like mouseup does for a click.
+let selectionChangeTimer = null;
+
+document.addEventListener("selectionchange", () => {
+  clearTimeout(selectionChangeTimer);
+  selectionChangeTimer = setTimeout(() => {
+    if (state.chunks.length === 0) return;
+
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+
+    const pane = document.getElementById("document-pane");
+    if (!pane.contains(sel.anchorNode) || !pane.contains(sel.focusNode)) return;
+
+    captureSelection();
+  }, 200);
+});
+
+document.getElementById("document-pane").addEventListener("touchend", () => {
+  setTimeout(() => {
+    if (state.chunks.length === 0) return;
+    captureSelection();
+  }, 300);
+});
+
+///////////////////////////////////////////////////////////////////////////
+// Annotation tools: highlights
+///////////////////////////////////////////////////////////////////////////
+
+document.getElementById("highlight-color").addEventListener("input", (e) => {
+  state.highlightColor = e.target.value;
+});
+
+document.getElementById("btn-highlight").addEventListener("click", () => {
+  if (currentSelections.length === 0) return;
+
+  currentSelections.forEach(sel => {
+    addAnnotation("highlight", sel, { color: state.highlightColor });
+  });
+
+  renderDocument();
+});
+
+document.getElementById("btn-unhighlight").addEventListener("click", () => {
+  if (currentSelections.length === 0) return;
+
+  currentSelections.forEach(sel => {
+    state.annotations = state.annotations.filter(a => {
+      if (a.type !== "highlight") return true;
+
+      const overlaps =
+        a.paragraphId === sel.paragraphId &&
+        a.startOffset < sel.endOffset &&
+        a.endOffset > sel.startOffset;
+
+      return !overlaps;
+    });
+  });
+
+  renderDocument();
+  window.getSelection().removeAllRanges();
+  currentSelections = [];
+});
+
+///////////////////////////////////////////////////////////////////////////
+// Annotation tools: bookmarks
+///////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: renderBookmarkList
+//  Inputs: None
+//  Outputs: Fills the sidebar's #bookmark-items with one button per
+//    bookmark; clicking one jumps to it
+///////////////////////////////////////////////////////////////////////////
+function renderBookmarkList() {
+  const container = document.getElementById("bookmark-items");
+  container.innerHTML = "";
+
+  const bookmarks = state.annotations.filter(a => a.type === "bookmark");
+
+  bookmarks.forEach(b => {
+    const btn = document.createElement("button");
+    btn.textContent = b.name;
+
+    btn.addEventListener("click", () => {
+      jumpToBookmark(b);
+    });
+
+    container.appendChild(btn);
+  });
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: renderBookmarkIcons
+//  Inputs: None
+//  Outputs: Places a 🔖 icon on each bookmarked paragraph, then lays out all
+//    paragraph icons
+//  Summary: Several call sites call this directly, instead of the full
+//    renderDocument(), when only bookmarks changed. Re-running
+//    layoutParagraphIcons() here keeps the icons from overlapping those of
+//    notes and provocations on the same paragraph.
+///////////////////////////////////////////////////////////////////////////
+function renderBookmarkIcons() {
+  const pane = document.getElementById("document-pane");
+  const paragraphs = pane.querySelectorAll("p");
+
+  pane.querySelectorAll(".bookmark-icon").forEach(icon => icon.remove());
+
+  const bookmarks = state.annotations.filter(a => a.type === "bookmark");
+
+  bookmarks.forEach(b => {
+    const p = Array.from(paragraphs).find(
+      el => Number(el.dataset.id) === b.paragraphId
+    );
+    if (!p) return;
+
+    const icon = document.createElement("span");
+    icon.textContent = "🔖";
+    icon.className = "bookmark-icon";
+    icon.dataset.id = b.id;
+    icon.dataset.startOffset = b.startOffset; // used to place the icon beside its selection
+
+    icon.style.top = "0px";
+
+    icon.addEventListener("click", () => {
+      openBookmarkPopup(b, icon);
+    });
+
+    p.appendChild(icon);
+  });
+
+  layoutParagraphIcons();
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: jumpToBookmark
+//  Inputs: bookmark ({ paragraphId, startOffset })
+//  Outputs: Smoothly scrolls the document pane to the bookmarked text
+///////////////////////////////////////////////////////////////////////////
+function jumpToBookmark(bookmark) {
+  const pane = document.getElementById("document-pane");
+  const paragraphs = pane.querySelectorAll("p");
+
+  const p = Array.from(paragraphs).find(
+    el => Number(el.dataset.id) === bookmark.paragraphId
+  );
+
+  if (!p) return;
+
+  const range = document.createRange();
+  let walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  let offset = bookmark.startOffset;
+
+  while (node && offset > node.length) {
+    offset -= node.length;
+    node = walker.nextNode();
+  }
+
+  if (node) {
+    range.setStart(node, offset);
+    const rect = range.getBoundingClientRect();
+    pane.scrollTo({
+      top: pane.scrollTop + rect.top - pane.getBoundingClientRect().top - 40,
+      behavior: "smooth"
+    });
+  }
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: openBookmarkPopup
+//  Inputs: bookmark, icon (the clicked 🔖 element)
+//  Outputs: Shows the popup, with the bookmark's name and Edit/Delete/Close
+//    buttons, next to the icon
+///////////////////////////////////////////////////////////////////////////
+function openBookmarkPopup(bookmark, icon) {
+  const popup = document.getElementById("bookmark-popup");
+  const text = document.getElementById("bookmark-popup-text");
+
+  text.textContent = bookmark.name;
+
+  const rect = icon.getBoundingClientRect();
+  const paneRect = document.getElementById("tool-pane").getBoundingClientRect();
+
+  popup.style.left = `${rect.right + 10}px`;
+  popup.style.top = `${rect.top - paneRect.top}px`;
+  popup.style.display = "block";
+
+  popup.dataset.id = bookmark.id;
+}
+
+document.getElementById("btn-bookmark").addEventListener("click", () => {
+  if (!currentSelections || currentSelections.length === 0) {
+    return;
+  }
+
+  // Only one of the bookmark and note inputs is open at a time.
+  document.getElementById("note-input-container").style.display = "none";
+  document.getElementById("bookmark-input-container").style.display = "flex";
+});
+
+// Enter: creates a new bookmark, or saves an edit if editingId is set.
+document.getElementById("bookmark-submit").addEventListener("click", () => {
+  const container = document.getElementById("bookmark-input-container");
+  const input = document.getElementById("bookmark-input");
+  const name = input.value.trim();
+
+  if (!name) {
+    return;
+  }
+
+  if (container.dataset.editingId) {
+    const bookmark = state.annotations.find(a => a.id === container.dataset.editingId);
+    if (bookmark) {
+      bookmark.name = name;
+    }
+
+    delete container.dataset.editingId;
+
+    input.value = "";
+    container.style.display = "none";
+
+    renderBookmarkList();
+    renderBookmarkIcons();
+    return;
+  }
+
+  if (!currentSelections || currentSelections.length === 0) return;
+
+  createBookmark(name, currentSelections[0]);
+
+  input.value = "";
+  container.style.display = "none";
+
+  renderBookmarkList();
+  renderBookmarkIcons();
+});
+
+document.getElementById("bookmark-cancel").addEventListener("click", () => {
+  const container = document.getElementById("bookmark-input-container");
+  const input = document.getElementById("bookmark-input");
+
+  input.value = "";
+  delete container.dataset.editingId;
+  container.style.display = "none";
+});
+
+document.getElementById("bookmark-toggle").addEventListener("click", () => {
+  const items = document.getElementById("bookmark-items");
+  const toggle = document.getElementById("bookmark-toggle");
+
+  if (items.style.display === "none") {
+    items.style.display = "block";
+    toggle.textContent = "Bookmarks ▲";
+  } else {
+    items.style.display = "none";
+    toggle.textContent = "Bookmarks ▼";
+  }
+});
+
+document.getElementById("bookmark-close").addEventListener("click", () => {
+  document.getElementById("bookmark-popup").style.display = "none";
+});
+
+document.getElementById("bookmark-delete").addEventListener("click", () => {
+  const popup = document.getElementById("bookmark-popup");
+
+  state.annotations = state.annotations.filter(a => a.id !== popup.dataset.id);
+
+  popup.style.display = "none";
+  renderBookmarkList();
+  renderBookmarkIcons();
+});
+
+document.getElementById("bookmark-edit").addEventListener("click", () => {
+  const popup = document.getElementById("bookmark-popup");
+  const id = popup.dataset.id;
+
+  const bookmark = state.annotations.find(a => a.id === id);
+  if (!bookmark) return;
+
+  popup.style.display = "none";
+
+  // Reuse the bookmark input box, pre-filled, in edit mode.
+  const container = document.getElementById("bookmark-input-container");
+  container.style.display = "flex";
+  document.getElementById("bookmark-input").value = bookmark.name;
+  container.dataset.editingId = id;
+});
+
+///////////////////////////////////////////////////////////////////////////
+// Annotation tools: notes
+///////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: showNotePopup
+//  Inputs: note ({ id, noteText, ... }), iconElement (the clicked 📝)
+//  Outputs: Shows #note-popup in the sidebar, level with the icon, with the
+//    note's text and Edit/Delete/Close buttons
+//  Summary: Display only; editing and deleting are handled by the buttons'
+//    own listeners below.
+///////////////////////////////////////////////////////////////////////////
+function showNotePopup(note, iconElement) {
+  const popup = document.getElementById("note-popup");
+  const text = document.getElementById("note-popup-text");
+
+  text.textContent = note.noteText;
+  popup.dataset.noteId = note.id;
+
+  const iconRect = iconElement.getBoundingClientRect();
+  const sidebar = document.getElementById("tool-pane");
+  const sidebarRect = sidebar.getBoundingClientRect();
+
+  // Inside the sidebar, so the popup uses the sidebar's coordinate system.
+  if (popup.parentElement !== sidebar) {
+    sidebar.appendChild(popup);
+  }
+
+  const topOffset = iconRect.top - sidebarRect.top + sidebar.scrollTop;
+  const leftOffset = 5;
+
+  popup.style.position = "absolute";
+  popup.style.left = `${leftOffset}px`;
+  popup.style.top = `${topOffset}px`;
+
+  popup.style.display = "block";
+}
+
+document.getElementById("btn-add-note").addEventListener("click", () => {
+  if (currentSelections.length === 0) {
+    return;
+  }
+
+  // Only one of the bookmark and note inputs is open at a time.
+  document.getElementById("bookmark-input-container").style.display = "none";
+
+  delete document.getElementById("note-input-container").dataset.editingId;
+  document.getElementById("note-input-container").style.display = "flex";
+  document.getElementById("note-input").value = "";
+});
+
+// Enter: creates a new note, or saves an edit if editingId is set.
+document.getElementById("note-submit").addEventListener("click", () => {
+  const container = document.getElementById("note-input-container");
+  const noteText = document.getElementById("note-input").value.trim();
+  if (!noteText) {
+    return;
+  }
+
+  if (container.dataset.editingId) {
+    const note = state.annotations.find(a => a.id === container.dataset.editingId);
+    if (note) note.noteText = noteText;
+    delete container.dataset.editingId;
+  } else {
+    // A note attaches only to the first selected paragraph.
+    const firstSelection = currentSelections[0];
+    if (firstSelection) {
+      addAnnotation("note", firstSelection, { noteText });
+    }
+  }
+
+  container.style.display = "none";
+  renderDocument();
+});
+
+document.getElementById("note-cancel").addEventListener("click", () => {
+  const container = document.getElementById("note-input-container");
+  document.getElementById("note-input").value = "";
+  delete container.dataset.editingId;
+  container.style.display = "none";
+});
+
+document.getElementById("note-edit").addEventListener("click", () => {
+  const popup = document.getElementById("note-popup");
+  const note = state.annotations.find(a => a.id === popup.dataset.noteId);
+  if (!note) return;
+
+  const container = document.getElementById("note-input-container");
+  container.dataset.editingId = note.id;
+  container.style.display = "flex";
+  document.getElementById("note-input").value = note.noteText;
+
+  popup.style.display = "none";
+});
+
+document.getElementById("note-delete").addEventListener("click", () => {
+  const popup = document.getElementById("note-popup");
+
+  state.annotations = state.annotations.filter(a => a.id !== popup.dataset.noteId);
+
+  popup.style.display = "none";
+  renderDocument();
+});
+
+document.getElementById("note-close").addEventListener("click", () => {
+  document.getElementById("note-popup").style.display = "none";
+});
+
+///////////////////////////////////////////////////////////////////////////
+// Startup
+///////////////////////////////////////////////////////////////////////////
+
+syncAnalysisTypeVisibility();
+setupTabs();
+
+// Drives which screen shows on load and after login or logout.
+onAuthChange((user) => {
+  state.currentUser = user;
+  if (user) {
+    showScreen("home");
+    loadHomeScreen();
+  } else {
+    showScreen("login");
+  }
+});
 
 export { state, renderDocument, getCurrentSelections };

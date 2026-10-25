@@ -1,35 +1,30 @@
 ///////////////////////////////////////////////////////////////////////////
 // worker-sections.js
-//  Shared by the tools that read a whole document with the AI (provocations
-//  and lenses).
+//  Shared by the tools that send a whole reading to the AI (provocations
+//  and lenses). The AI has a per-minute token limit, so a reading is cut
+//  into sections and sent one request at a time, waiting out the limit
+//  between them. This file provides the section splitter and a queued,
+//  retrying request function.
 //
-//  The AI has a per-minute token limit, and the reading itself is most of
-//  what each request carries, so a long reading can't go in one request.
-//  Instead it's cut into sections, sent one at a time, and the app waits
-//  out the limit between them. This file holds the parts that are the same
-//  for every tool: cutting a reading into sections, and sending one section
-//  (waiting and retrying if the AI says it's at its limit).
-//
-//  Oliver Emerson — 2025–2026
+//  Oliver Emerson - 2025-2026
 ///////////////////////////////////////////////////////////////////////////
 
 const WORKER_BASE_URL = "https://plain-band-2d43.oemerson8158.workers.dev";
 
 const MAX_ATTEMPTS_PER_SECTION = 3;
-const MAX_WAIT_SECONDS = 90; // longest single wait we'll sit through for the AI's limit
-const MAX_RATE_LIMIT_WAITS = 6; // how many times one section will wait out the limit before giving up
+const MAX_WAIT_SECONDS = 90;    // longest single wait for the rate limit that we'll sit through
+const MAX_RATE_LIMIT_WAITS = 6; // rate-limit waits one section allows before giving up
 
 ///////////////////////////////////////////////////////////////////////////
 //  Function: splitIntoSections
-//  Inputs: items — the document's chunks (each with a .text), maxChars —
-//    roughly how much text one request can carry
+//  Inputs: items (the document's chunks, each with .text), maxChars (the
+//    most text one request can carry)
 //  Outputs: [{ startIndex, paragraphs: [text, ...], chars }]
 //  Summary: Cuts the reading into as few, evenly-sized sections as the
-//    per-request limit allows. Evenly sized, so a long reading doesn't end
-//    with a tiny last section that still costs a full wait to process.
-//    Paragraphs are never split across sections.
+//    limit allows, so a long reading doesn't end with a tiny last section
+//    that still costs a full wait. Paragraphs are never split.
 ///////////////////////////////////////////////////////////////////////////
-export function splitIntoSections(items, maxChars) {
+function splitIntoSections(items, maxChars) {
   const total = items.reduce((n, item) => n + item.text.length, 0);
   const sectionCount = Math.max(1, Math.ceil(total / maxChars));
   const target = total / sectionCount;
@@ -56,8 +51,13 @@ export function splitIntoSections(items, maxChars) {
   return sections;
 }
 
-// Counts down in the caller's status line. Returns false if the student
-// stopped it.
+///////////////////////////////////////////////////////////////////////////
+//  Function: waitWithCountdown
+//  Inputs: seconds, buildText(remaining) -> status string, shouldStop(),
+//    setStatus(text)
+//  Outputs: Promise<boolean> — false if the student stopped the wait
+//  Summary: Waits one second at a time, updating the status line each tick.
+///////////////////////////////////////////////////////////////////////////
 async function waitWithCountdown(seconds, buildText, shouldStop, setStatus) {
   for (let remaining = Math.ceil(seconds); remaining > 0; remaining--) {
     if (shouldStop()) return false;
@@ -68,22 +68,22 @@ async function waitWithCountdown(seconds, buildText, shouldStop, setStatus) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-//  Function: requestWithRetry
+//  Function: sendWithRetry
 //  Inputs:
 //    path — worker route, e.g. "/lens"
 //    body — the request body
-//    label — what to call this section in status text ("Reading section 2 of 4...")
-//    isStale() — true if a different document has been opened meanwhile
+//    label — name for this section in status text ("Reading section 2 of 4...")
+//    isStale() — true if a different document was opened meanwhile
 //    shouldStop() — true if the student pressed Stop (or isStale())
 //    setStatus(text) — shows a status line while waiting
 //    fallbackMessage — shown if the worker gives no message of its own
 //  Outputs, one of:
-//    { ok: true, data }        — the worker's JSON
-//    { cancelled: true }       — stopped, or the document changed
-//    { ok: false, tooLong }    — this section is too big to send at all
-//    { ok: false, message }    — failed; message is fit to show the student
-//  Summary: Sends one section. If the AI reports it's at its per-minute
-//    limit, waits the time it asks for (with a countdown) and tries again.
+//    { ok: true, data }                            — the worker's JSON
+//    { cancelled: true }                           — stopped, or the document changed
+//    { ok: false, tooLong: true }                  — section too big to send at all
+//    { ok: false, message, retryAfterSeconds? }    — failed; message is fit to show
+//  Summary: Sends one section. If the AI reports its per-minute limit, waits
+//    the time it asks for (with a countdown) and tries again.
 ///////////////////////////////////////////////////////////////////////////
 async function sendWithRetry({
   path,
@@ -94,8 +94,8 @@ async function sendWithRetry({
   setStatus,
   fallbackMessage = "Couldn't reach the AI right now. Try again in a moment."
 }) {
-  // Waiting out the per-minute limit is expected and is counted separately
-  // from real failures, so it doesn't use up the section's attempts.
+  // Rate-limit waits are expected, so they're counted separately and don't
+  // use up the section's attempts.
   let rateLimitWaits = 0;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_SECTION; attempt++) {
@@ -115,16 +115,11 @@ async function sendWithRetry({
       return { ok: false, message: "Couldn't reach the server. Check your connection and try again." };
     }
 
-    // A different document was opened while this was in flight — throw the
-    // result away rather than put it on the wrong document.
+    // A different document was opened while this was in flight.
     if (isStale()) return { cancelled: true };
 
     if (response.ok && !data.error) return { ok: true, data };
 
-    // Hitting the AI's per-minute limit is expected, and handled by waiting,
-    // so it's logged quietly. Anything else is a real problem and gets the
-    // full error treatment. (The browser still prints its own red line for
-    // any non-200 response; that can't be turned off.)
     const wait = Number(data.retryAfterSeconds) || 60;
     const willWait =
       data.error === "rate_limited" &&
@@ -142,13 +137,12 @@ async function sendWithRetry({
       );
       if (!finished) return { cancelled: true };
       rateLimitWaits++;
-      attempt--; // this wasn't a failed attempt
+      attempt--;
       continue;
     }
 
-    // The AI occasionally gives an answer that can't be read (cut off, or
-    // not in the expected format). That's random rather than a sign the
-    // section is bad, so just ask again.
+    // Unreadable answers are random rather than a sign the section is bad,
+    // so just ask again.
     if (data.error === "unreadable_response" && attempt < MAX_ATTEMPTS_PER_SECTION) {
       console.warn(`${path}: the AI's answer couldn't be read; trying this section again (attempt ${attempt} of ${MAX_ATTEMPTS_PER_SECTION}).`);
       setStatus(`${label} Retrying...`);
@@ -159,15 +153,13 @@ async function sendWithRetry({
     if (data.details) console.error(`${path}: details from worker:`, data.details);
     if (data.raw) console.error(`${path}: raw model output that failed to parse:`, data.raw);
 
-    // One section that's too big for a single request (e.g. one enormous
-    // paragraph) is skipped by the caller rather than failing the whole run.
+    // The caller skips a too-big section rather than failing the whole run.
     if (data.error === "too_long") return { ok: false, tooLong: true };
 
     return {
       ok: false,
       message: typeof data.message === "string" ? data.message : fallbackMessage,
-      // How long the worker said to wait, when the failure was the rate limit
-      // (so the caller can hold off retrying for that long).
+      // Lets the caller hold off retrying for as long as the worker asked.
       retryAfterSeconds: data.error === "rate_limited" ? wait : undefined
     };
   }
@@ -176,17 +168,23 @@ async function sendWithRetry({
 }
 
 ///////////////////////////////////////////////////////////////////////////
-//  Request queue
-//  Provocations and lenses share the same per-minute AI budget, so if two of
-//  them ran at once they would keep rate-limiting each other. Every request
-//  goes through this one queue and is sent only when the one before it has
-//  finished (including any waiting it had to do). Pressing Stop (or opening
-//  another document) still takes effect while a request is waiting its turn.
+// Request queue
+//  Provocations and lenses share one per-minute AI budget, so running both
+//  at once would make them rate-limit each other. Every request goes
+//  through this queue and is sent only after the one before it finishes.
+//  Stop (or opening another document) still works while a request waits.
 ///////////////////////////////////////////////////////////////////////////
 
 let queueTail = Promise.resolve();
 let activeRequests = 0; // running + waiting
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: waitForTurn
+//  Inputs: previous (promise for the request ahead), shouldStop()
+//  Outputs: Promise<boolean> — true when it's this request's turn, false if
+//    stopped while waiting
+//  Summary: Resolves when the request ahead finishes, or earlier if stopped.
+///////////////////////////////////////////////////////////////////////////
 function waitForTurn(previous, shouldStop) {
   return new Promise(resolve => {
     let settled = false;
@@ -201,9 +199,14 @@ function waitForTurn(previous, shouldStop) {
   });
 }
 
-// Same inputs and outputs as sendWithRetry (documented above); this is the
-// function the tools call.
-export async function requestWithRetry(options) {
+///////////////////////////////////////////////////////////////////////////
+//  Function: requestWithRetry
+//  Inputs: options — same as sendWithRetry
+//  Outputs: Same as sendWithRetry
+//  Summary: Queues the request behind any others, then sends it. This is
+//    the function the tools call.
+///////////////////////////////////////////////////////////////////////////
+async function requestWithRetry(options) {
   const previous = queueTail;
   let release;
   queueTail = new Promise(resolve => { release = resolve; });
@@ -219,8 +222,10 @@ export async function requestWithRetry(options) {
     return await sendWithRetry(options);
   } finally {
     activeRequests--;
-    // Only let the next request go once the one ahead of this has finished,
-    // even if this one gave up while still waiting.
+    // Release the next request only once the one ahead has finished, even
+    // if this one gave up while still waiting.
     previous.then(release);
   }
 }
+
+export { splitIntoSections, requestWithRetry };

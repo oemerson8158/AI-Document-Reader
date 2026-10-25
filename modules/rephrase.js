@@ -1,13 +1,23 @@
 ///////////////////////////////////////////////////////////////////////////
 // rephrase.js
-//  This file implements the rephrasing tool for the AI Document Reader.
-//  Its purpose is to simplify selected text to a user-chosen Lexile level
-//  and optionally provide examples that clarify meaning. This helps
-//  students understand complex passages without losing the original intent.
+//  Implements the rephrasing tool: rewrites the student's selected text at
+//  a chosen Lexile level, optionally with an example, so complex passages
+//  are easier to understand without losing their meaning.
 //
 //  Oliver Emerson - 2025-2026
 ///////////////////////////////////////////////////////////////////////////
 
+const WORKER_BASE_URL = "https://plain-band-2d43.oemerson8158.workers.dev";
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: initRephraseUI
+//  Inputs: { getState, setResult } — getState() returns the app state;
+//    setResult(text) displays text in the output box
+//  Outputs: Wires up the Rephrase button
+//  Summary: On click, sends the selected paragraphs to the worker and shows
+//    the result. The button is disabled while a request is running, since
+//    rapid clicks would each spend part of the AI's shared per-minute budget.
+///////////////////////////////////////////////////////////////////////////
 function initRephraseUI({ getState, setResult }) {
   const submitBtn = document.getElementById("rephrase-submit");
 
@@ -18,7 +28,6 @@ function initRephraseUI({ getState, setResult }) {
     const includeExample =
       document.getElementById("rephrase-include-example")?.checked || false;
 
-    // Ensure paragraphs is ALWAYS an array
     const paragraphs = Array.isArray(state.rephrase?.paragraphs)
       ? state.rephrase.paragraphs
       : [];
@@ -28,8 +37,6 @@ function initRephraseUI({ getState, setResult }) {
       return;
     }
 
-    // One request at a time: rapid clicks would each spend part of the
-    // AI's shared per-minute budget.
     submitBtn.disabled = true;
     const originalLabel = submitBtn.textContent;
     submitBtn.textContent = "Rephrasing...";
@@ -44,68 +51,37 @@ function initRephraseUI({ getState, setResult }) {
   });
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: runRephrase
+//  Inputs: { paragraphs, lexile, includeExample }
+//  Outputs: Promise<string> — the rephrased text, or a message for the
+//    student; an empty string if the request failed
+//  Summary: Calls the worker's /rephrase route. The worker supplies a plain-
+//    English `message` for problems the student can act on (selection too
+//    long, AI busy), which is returned in place of a result.
+///////////////////////////////////////////////////////////////////////////
 async function runRephrase({ paragraphs, lexile, includeExample }) {
-  console.log("REPHRASE: Sending to Worker:", {
-    paragraphs,
-    lexile,
-    includeExample
-  });
-
-  let response;
-  try {
-    response = await fetch(
-      "https://plain-band-2d43.oemerson8158.workers.dev/rephrase",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          paragraphs,
-          lexile,
-          includeExample
-        })
-      }
-    );
-  } catch (err) {
-    console.error("REPHRASE: NETWORK ERROR — Worker unreachable:", err);
-    return "";
-  }
-
-  console.log("REPHRASE: Worker status:", response.status);
-
-  let rawText;
-  try {
-    rawText = await response.text();
-    console.log("REPHRASE: RAW WORKER RESPONSE:", rawText);
-  } catch (err) {
-    console.error("REPHRASE: FAILED TO READ WORKER RESPONSE:", err);
-    return "";
-  }
-
   let data;
   try {
-    data = JSON.parse(rawText);
-    console.log("REPHRASE: PARSED JSON:", data);
+    const response = await fetch(`${WORKER_BASE_URL}/rephrase`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paragraphs, lexile, includeExample })
+    });
+    data = await response.json();
   } catch (err) {
-    console.error("REPHRASE: JSON PARSE ERROR — Worker returned non‑JSON:", err);
+    console.error("REPHRASE: request failed or returned non-JSON:", err);
     return "";
   }
 
-  // The worker writes a plain-English `message` for problems the student can
-  // act on (selection too long, AI busy). Show it in the output box rather
-  // than leaving it blank.
-  if (data && typeof data.message === "string") {
-    return data.message;
-  }
+  if (data && typeof data.message === "string") return data.message;
 
   if (!data || typeof data.result !== "string") {
-    console.error("REPHRASE: INVALID WORKER RESULT FORMAT:", data);
+    console.error("REPHRASE: invalid worker result format:", data);
     return "";
   }
-
-  console.log("REPHRASE: FINAL RESULT STRING:", data.result);
 
   return data.result;
 }
-
 
 export { initRephraseUI };

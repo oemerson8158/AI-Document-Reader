@@ -1,23 +1,21 @@
 ///////////////////////////////////////////////////////////////////////////
 // annotations.js
-//  This file implements the annotation tools for the AI Document Reader.
-//  Its purpose is to allow users to highlight text, create bookmarks,
-//  and attach notes to specific passages. These tools support active
-//  reading, organization, and long-term comprehension. It also lets the
-//  user generate a summary of their own notes and provocation responses.
+//  Implements the annotation tools: highlights, bookmarks, and notes
+//  attached to specific passages, plus a summary of the student's own notes
+//  and provocation responses.
 //
 //  Oliver Emerson - 2025-2026
 ///////////////////////////////////////////////////////////////////////////
 
-import { state, renderDocument } from "../app.js";
+import { state } from "../app.js";
 
 const WORKER_BASE_URL = "https://plain-band-2d43.oemerson8158.workers.dev";
 
 ///////////////////////////////////////////////////////////////////////////
 //  Function: addAnnotation
-//  Inputs: type (string), extraData (object)
-//  Outputs: Adds annotation to state.annotations
-//  Summary: Stores highlight, bookmark, or note annotations.
+//  Inputs: type ("highlight" | "note"), sel ({ paragraphId, startOffset,
+//    endOffset }), extra (type-specific fields, e.g. color or noteText)
+//  Outputs: Adds the annotation to state.annotations
 ///////////////////////////////////////////////////////////////////////////
 function addAnnotation(type, sel, extra = {}) {
   state.annotations.push({
@@ -32,22 +30,10 @@ function addAnnotation(type, sel, extra = {}) {
 
 ///////////////////////////////////////////////////////////////////////////
 //  Function: createBookmark
-//  Inputs:
-//    name (string) – The user‑provided label for the bookmark.
-//    selection (object) – The current text selection containing:
-//        • paragraphId (number) – Paragraph where the bookmark is anchored
-//        • startOffset (number) – Start position of the selected text
-//        • endOffset (number) – End position of the selected text
-//  Outputs:
-//    Creates a bookmark annotation object and stores it in state.annotations.
-//    Returns the newly created bookmark object.
-//  Error Checking:
-//    Assumes `selection` is valid and contains paragraphId/startOffset/endOffset.
-//    Assumes `state.annotations` is already initialized.
-//  Summary:
-//    Generates a bookmark annotation tied to a specific text range in the
-//    document. Bookmarks allow the reader to quickly jump back to important
-//    passages using the bookmark list in the sidebar.
+//  Inputs: name (string), selection ({ paragraphId, startOffset, endOffset })
+//  Outputs: Adds a bookmark to state.annotations and returns it
+//  Summary: Bookmarks let the reader jump back to a passage from the
+//    sidebar list.
 ///////////////////////////////////////////////////////////////////////////
 function createBookmark(name, selection) {
   const bookmark = {
@@ -67,9 +53,9 @@ function createBookmark(name, selection) {
 //  Function: copyTextToClipboard
 //  Inputs: text (string)
 //  Outputs: Promise<boolean> — whether the copy worked
-//  Summary: Uses the modern Clipboard API where the browser allows it (it
-//    needs a secure page, i.e. https), and falls back to the older
-//    select-and-copy approach otherwise (e.g. some iPad/Safari setups).
+//  Summary: Uses the Clipboard API where the browser allows it (it needs a
+//    secure page), otherwise falls back to select-and-copy (e.g. some
+//    iPad/Safari setups).
 ///////////////////////////////////////////////////////////////////////////
 async function copyTextToClipboard(text) {
   if (navigator.clipboard && window.isSecureContext) {
@@ -140,10 +126,10 @@ function renderSummary(outputEl, text) {
 //  Function: loadAnnotationsUI
 //  Inputs: None
 //  Outputs: Injects the "Summarize Annotations" button and result panel
-//    into #tool-content when the Annotations tab is active.
-//  Summary: Gathers the user's notes and any provocation responses they've
-//    marked for inclusion, sends them to the worker's /summarize endpoint,
-//    and displays the resulting summary in the sidebar.
+//    into #tool-content
+//  Summary: Sends the student's notes and the provocation responses they've
+//    marked for inclusion to the worker's /summarize route, and shows the
+//    summary. A previous summary is restored when the tab is reopened.
 ///////////////////////////////////////////////////////////////////////////
 function loadAnnotationsUI() {
   const content = document.getElementById("tool-content");
@@ -155,8 +141,6 @@ function loadAnnotationsUI() {
   const summarizeBtn = document.getElementById("summarize-btn");
   const outputEl = document.getElementById("summary-output");
 
-  // Restore a previously-generated summary, if there is one, so switching
-  // tabs and coming back doesn't lose it.
   if (state.annotationsSummary) {
     renderSummary(outputEl, state.annotationsSummary);
   }

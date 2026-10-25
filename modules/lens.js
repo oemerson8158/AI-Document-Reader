@@ -1,56 +1,95 @@
 ///////////////////////////////////////////////////////////////////////////
-// lens.js — Semantic, sentence-level lenses
+// lens.js
+//  Implements semantic, sentence-level lenses. A lens is a topic or question
+//  the student wants to track through a document ("where does the author
+//  rely on emotion?"). Creating one asks the worker which sentences engage
+//  it, how strongly (strong or partial), and why. The student can then:
+//    - see those sentences highlighted, with a light wash over each
+//      matching paragraph,
+//    - click a highlighted sentence to see why it matched, and dismiss it,
+//    - select text and add it to the lens themselves,
+//    - step through hits with Previous/Next and see where they sit on a thin
+//      map beside the scrollbar.
 //
-//  A lens is a topic or question the student wants to track through a
-//  document ("where does the author rely on emotion?"). Creating one asks
-//  the worker which sentences genuinely engage it, how strongly (strong or
-//  partial), and why. The student then:
-//    • sees those sentences highlighted in the reader (stronger matches
-//      are shaded more solidly), with the paragraph around each one given
-//      a very light wash of the lens color,
-//    • clicks any highlighted sentence to see WHY it matched, and can
-//      dismiss it if they disagree,
-//    • selects text themselves and adds it, if the lens missed something,
-//    • steps through the hits with Previous/Next, and sees where they sit
-//      in the document on a thin map beside the scrollbar.
+//  A long reading is checked one section at a time (see worker-sections.js).
+//  The lens appears after the first section and fills in as the rest
+//  finish; Stop keeps what's been found, and "Check the rest" resumes.
 //
 //  Shape of a lens (saved with the document):
-//    { id, query, color, hits: [ {
-//        id, paragraphId, startOffset, endOffset,   // one sentence (or a
-//        strength: "strong" | "partial",            // student selection)
+//    { id, query, color, incomplete?, resumeFrom?, hits: [ {
+//        id, paragraphId, startOffset, endOffset,
+//        strength: "strong" | "partial",
 //        reason: string,
 //        source: "ai" | "user"
 //    } ] }
 //
-//  Oliver Emerson — 2025–2026
+//  Oliver Emerson - 2025-2026
 ///////////////////////////////////////////////////////////////////////////
 
 import { state, renderDocument, getCurrentSelections } from "../app.js";
 import { splitIntoSections, requestWithRetry } from "./worker-sections.js";
 
+// Roughly how much text goes to the AI per request. The worker rejects a
+// section somewhat larger than this.
+const LENS_SECTION_MAX_CHARS = 6500;
+
+// Lens-building state lives at module level so a lens keeps being built, and
+// the tab shows the right state, if the student switches tabs and back.
+const lensRun = {
+  running: false,
+  cancelRequested: false,
+  currentLensId: null, // the lens being filled in right now
+  text: "",            // status line shown under the Create Lens row
+  kind: "",            // "", "error", or "warn"
+  forChunks: null      // which document that status belongs to
+};
+
+let resumeCooldownUntil = 0; // timestamp (ms) when "Check the rest" can be used again
+let cooldownTimer = null;
+let popupEl = null;          // the "why did this match?" popup, if open
+
 ///////////////////////////////////////////////////////////////////////////
 // Shared helpers
 ///////////////////////////////////////////////////////////////////////////
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: getActiveLens
+//  Inputs: None
+//  Outputs: The lens currently applied to the reader, or null
+///////////////////////////////////////////////////////////////////////////
 function getActiveLens() {
   return state.lenses.find(l => l.id === state.activeLensId) || null;
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: sortedHits
+//  Inputs: lens
+//  Outputs: A copy of the lens's hits in document order
+///////////////////////////////////////////////////////////////////////////
 function sortedHits(lens) {
   return [...lens.hits].sort(
     (a, b) => a.paragraphId - b.paragraphId || a.startOffset - b.startOffset
   );
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: hexToRgba
+//  Inputs: hex ("#rrggbb"), alpha (0-1)
+//  Outputs: A CSS rgba() string; falls back to light blue for a bad hex
+///////////////////////////////////////////////////////////////////////////
 function hexToRgba(hex, alpha) {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
   const n = m ? parseInt(m[1], 16) : 0xc0e7ff;
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
-// How a lens hit is painted. Strong matches are solid; partial matches are
-// a faded wash with a dashed underline, so the two read differently even
-// when the student picks a very light color.
+///////////////////////////////////////////////////////////////////////////
+//  Function: lensHitStyle
+//  Inputs: color (hex), strength ("strong" | "partial")
+//  Outputs: Inline CSS for a lens hit
+//  Summary: Strong matches are solid; partial matches are a faded wash with
+//    a dashed underline, so the two read differently even in a light color.
+///////////////////////////////////////////////////////////////////////////
 function lensHitStyle(color, strength) {
   if (strength === "strong") {
     return `background-color: ${hexToRgba(color, 1)};`;
@@ -58,19 +97,21 @@ function lensHitStyle(color, strength) {
   return `background-color: ${hexToRgba(color, 0.4)}; border-bottom: 1px dashed rgba(0, 0, 0, 0.4);`;
 }
 
-// The wash laid over a whole paragraph that contains at least one hit.
-// Deliberately lighter than the partial-match shade (0.4) so the matching
-// sentences still stand out clearly against it.
+///////////////////////////////////////////////////////////////////////////
+//  Function: lensParagraphColor
+//  Inputs: color (hex)
+//  Outputs: The background color for a paragraph containing a hit
+//  Summary: Deliberately lighter than the partial-match shade, so matching
+//    sentences still stand out against it.
+///////////////////////////////////////////////////////////////////////////
 function lensParagraphColor(color) {
   return hexToRgba(color, 0.15);
 }
 
 ///////////////////////////////////////////////////////////////////////////
 // Sentence splitting
-//  Done on the client, in this one place, so the sentences sent to the
-//  worker and the offsets used to highlight them always agree. Uses the
-//  browser's built-in sentence segmenter when available (it copes with
-//  most abbreviations and quotes); falls back to a simple regex.
+//  Done on the client, in one place, so the sentences sent to the worker and
+//  the offsets used to highlight them always agree.
 ///////////////////////////////////////////////////////////////////////////
 
 const sentenceSegmenter =
@@ -78,12 +119,29 @@ const sentenceSegmenter =
     ? new Intl.Segmenter("en", { granularity: "sentence" })
     : null;
 
+// A span ending in a title/abbreviation or a lone initial ("Mr.", "J.")
+// isn't really the end of a sentence.
+const ABBREVIATION_END = /(?:\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|Vol|No|Fig|Inc|Co|Ltd|cf|approx|ca|e\.g|i\.e)|\b[A-Z])\.$/;
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: pushTrimmedSpan
+//  Inputs: spans (array), text, start, end
+//  Outputs: Pushes { start, end } onto spans with surrounding whitespace
+//    trimmed; skips empty spans
+///////////////////////////////////////////////////////////////////////////
 function pushTrimmedSpan(spans, text, start, end) {
   while (start < end && /\s/.test(text[start])) start++;
   while (end > start && /\s/.test(text[end - 1])) end--;
   if (end > start) spans.push({ start, end });
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: splitSentences
+//  Inputs: text (a paragraph)
+//  Outputs: [{ start, end }] — one span per sentence
+//  Summary: Uses the browser's sentence segmenter when available, otherwise
+//    a simple regex, then glues together breaks after abbreviations.
+///////////////////////////////////////////////////////////////////////////
 function splitSentences(text) {
   const spans = [];
 
@@ -106,11 +164,12 @@ function splitSentences(text) {
   return mergeAbbreviationBreaks(text, spans);
 }
 
-// Sentence splitters treat the period in "Mr. Smith" or "J. K. Rowling" as
-// the end of a sentence. If a span ends in a common title/abbreviation or a
-// lone initial, glue it to the span after it.
-const ABBREVIATION_END = /(?:\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|Vol|No|Fig|Inc|Co|Ltd|cf|approx|ca|e\.g|i\.e)|\b[A-Z])\.$/;
-
+///////////////////////////////////////////////////////////////////////////
+//  Function: mergeAbbreviationBreaks
+//  Inputs: text, spans
+//  Outputs: spans with any span ending in an abbreviation merged into the
+//    one after it
+///////////////////////////////////////////////////////////////////////////
 function mergeAbbreviationBreaks(text, spans) {
   const merged = [];
   for (const span of spans) {
@@ -125,13 +184,13 @@ function mergeAbbreviationBreaks(text, spans) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-// Upgrading older saved lenses
-//  Lenses saved before this version were keyword-based:
-//  { id, keywords, matches: [paragraphIds], color }. Convert those into
-//  the new shape (one whole-paragraph hit per old match) so documents
-//  saved earlier still open and display.
+//  Function: normalizeLens
+//  Inputs: lens (as saved)
+//  Outputs: A lens in the current shape
+//  Summary: Lenses saved by an older, keyword-based version look like
+//    { id, keywords, matches: [paragraphIds], color }. Each old match
+//    becomes one whole-paragraph hit so older documents still open.
 ///////////////////////////////////////////////////////////////////////////
-
 function normalizeLens(lens) {
   if (typeof lens.query === "string" && Array.isArray(lens.hits)) return lens;
 
@@ -165,46 +224,37 @@ function normalizeLens(lens) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-// Creating a lens
-//
-//  A long reading can't go to the AI in one request (see
-//  worker-sections.js), so it's checked one section at a time, with the
-//  app waiting out the AI's per-minute limit between sections. The lens
-//  appears as soon as the first section is done, and its hits fill in as
-//  the rest finish, so the student can start reading with it right away.
-//  Stop keeps whatever has been found so far (the lens is then marked as
-//  covering only part of the reading).
+// Status line and Create/Stop button
 ///////////////////////////////////////////////////////////////////////////
 
-// Roughly how much text goes to the AI per request. (The worker turns away
-// a section a good deal bigger than this.)
-const LENS_SECTION_MAX_CHARS = 6500;
-
-// Lives at module level (not inside the tab's UI) so a lens keeps being
-// built, and the tab shows the right state, if the student switches tabs
-// and back.
-const lensRun = {
-  running: false,
-  cancelRequested: false,
-  currentLensId: null, // the lens being filled in right now
-  text: "",            // status line shown under the Create Lens row
-  kind: "",            // "", "error", or "warn"
-  forChunks: null      // which document that status belongs to
-};
-
+///////////////////////////////////////////////////////////////////////////
+//  Function: paintLensStatus
+//  Inputs: None
+//  Outputs: Draws lensRun.text in #lens-status (no-op if the tab is closed)
+///////////////////////////////////////////////////////////////////////////
 function paintLensStatus() {
   const el = document.getElementById("lens-status");
-  if (!el) return; // Lenses tab isn't currently open
+  if (!el) return;
   el.textContent = lensRun.text;
   el.className = "lens-status" + (lensRun.kind ? ` lens-status-${lensRun.kind}` : "");
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: setLensStatus
+//  Inputs: message (string), kind ("error" | "warn" | omitted)
+//  Outputs: Stores the status line and redraws it
+///////////////////////////////////////////////////////////////////////////
 function setLensStatus(message, kind) {
   lensRun.text = message || "";
   lensRun.kind = kind || "";
   paintLensStatus();
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: syncLensButton
+//  Inputs: None
+//  Outputs: Sets the button to "Create Lens", "Stop", or "Stopping..."
+///////////////////////////////////////////////////////////////////////////
 function syncLensButton() {
   const btn = document.getElementById("lens-submit");
   if (!btn) return;
@@ -220,8 +270,19 @@ function syncLensButton() {
   }
 }
 
-// Ask the worker which sentences in one section engage the lens, and turn
-// its answer into hits with character offsets.
+///////////////////////////////////////////////////////////////////////////
+// Creating and resuming a lens
+///////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: requestLensSection
+//  Inputs: { query, section, sentenceSpans, skipCorrection, label, ctx }
+//  Outputs: { ok: true, query, hits } with hits as character offsets, or the
+//    failure result from requestWithRetry
+//  Summary: Asks the worker which sentences in one section engage the lens.
+//    The worker answers in [paragraph, sentence] pairs, which are mapped
+//    back to offsets using the same split that produced the sentences.
+///////////////////////////////////////////////////////////////////////////
 async function requestLensSection({ query, section, sentenceSpans, skipCorrection, label, ctx }) {
   const sentences = section.paragraphs.map((_, k) => {
     const idx = section.startIndex + k;
@@ -238,7 +299,7 @@ async function requestLensSection({ query, section, sentenceSpans, skipCorrectio
     fallbackMessage: "Couldn't check this part of the reading right now. Try again in a moment."
   });
 
-  if (!result.ok) return result; // cancelled, too long, or failed
+  if (!result.ok) return result;
 
   const data = result.data;
   if (!Array.isArray(data.hits)) {
@@ -246,8 +307,6 @@ async function requestLensSection({ query, section, sentenceSpans, skipCorrectio
     return { ok: false, message: "The server sent back something unexpected. Try again." };
   }
 
-  // The worker answers in [paragraph index, sentence index] pairs. Map
-  // those back to character offsets with the same split used to send them.
   const hits = [];
   data.hits.forEach(h => {
     const chunk = state.chunks[h.p];
@@ -273,9 +332,12 @@ async function requestLensSection({ query, section, sentenceSpans, skipCorrectio
 }
 
 ///////////////////////////////////////////////////////////////////////////
-// Sidebar UI
+//  Function: initLensUI
+//  Inputs: None
+//  Outputs: Injects the Lenses tab UI into #tool-content
+//  Summary: Called each time the tab is selected. The Create button turns
+//    into "Stop" while a lens is being built.
 ///////////////////////////////////////////////////////////////////////////
-
 function initLensUI() {
   const content = document.getElementById("tool-content");
   content.innerHTML = `
@@ -296,7 +358,6 @@ function initLensUI() {
     lensRun.kind = "";
   }
 
-  // The button starts a lens, and turns into "Stop" while one is being built.
   document.getElementById("lens-submit").addEventListener("click", () => {
     if (lensRun.running) {
       lensRun.cancelRequested = true;
@@ -317,25 +378,36 @@ function initLensUI() {
 
 ///////////////////////////////////////////////////////////////////////////
 // "Check the rest" cooldown
-//  When a run gives up because the AI is at its per-minute limit, the worker
-//  says how long until it frees up. The button stays disabled, with a
-//  countdown, for exactly that long (it varies), so pressing it again can't
-//  just earn another rate-limit error.
+//  When a run gives up on the AI's per-minute limit, the worker says how
+//  long until it frees up. The button stays disabled, with a countdown, for
+//  that long, so pressing it can't just earn another rate-limit error.
 ///////////////////////////////////////////////////////////////////////////
 
-let resumeCooldownUntil = 0; // timestamp (ms) when the button can be used again
-let cooldownTimer = null;
-
+///////////////////////////////////////////////////////////////////////////
+//  Function: cooldownSecondsLeft
+//  Inputs: None
+//  Outputs: Whole seconds until the button can be used again (0 if ready)
+///////////////////////////////////////////////////////////////////////////
 function cooldownSecondsLeft() {
   return Math.max(0, Math.ceil((resumeCooldownUntil - Date.now()) / 1000));
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: applyResumeCooldown
+//  Inputs: btn (a "Check the rest" button)
+//  Outputs: Sets its disabled state and label from the cooldown
+///////////////////////////////////////////////////////////////////////////
 function applyResumeCooldown(btn) {
   const left = cooldownSecondsLeft();
   btn.disabled = left > 0;
   btn.textContent = left > 0 ? `Check the rest (wait ${left}s)` : "Check the rest";
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: tickResumeCooldown
+//  Inputs: None
+//  Outputs: Updates every "Check the rest" button; stops the timer at zero
+///////////////////////////////////////////////////////////////////////////
 function tickResumeCooldown() {
   document.querySelectorAll(".lens-resume").forEach(applyResumeCooldown);
   if (cooldownSecondsLeft() === 0 && cooldownTimer) {
@@ -344,11 +416,21 @@ function tickResumeCooldown() {
   }
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: startResumeCooldown
+//  Inputs: seconds
+//  Outputs: Starts (or extends) the cooldown and its ticking timer
+///////////////////////////////////////////////////////////////////////////
 function startResumeCooldown(seconds) {
   resumeCooldownUntil = Date.now() + Math.ceil(seconds) * 1000;
   if (!cooldownTimer) cooldownTimer = setInterval(tickResumeCooldown, 1000);
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: handleCreateLens
+//  Inputs: None
+//  Outputs: Starts building a new lens from the sidebar inputs
+///////////////////////////////////////////////////////////////////////////
 async function handleCreateLens() {
   if (lensRun.running) return;
 
@@ -362,23 +444,33 @@ async function handleCreateLens() {
   await runLens({ lens: null, query, color: colorInput.value, from: 0 });
 }
 
-// Continues a lens that stopped before every section was checked (Stop, an
-// error, or the AI staying busy) from the paragraph where it left off.
-// `resumeFrom` is saved with the lens; a lens saved by an older version has
-// none, so it is re-checked from the start (hits already found are kept, not
-// duplicated).
+///////////////////////////////////////////////////////////////////////////
+//  Function: resumeLens
+//  Inputs: lens
+//  Outputs: Continues a lens that stopped before every section was checked
+//  Summary: Resumes from the paragraph saved in lens.resumeFrom. A lens
+//    saved by an older version has none and is re-checked from the start
+//    (hits already found are kept, not duplicated).
+///////////////////////////////////////////////////////////////////////////
 async function resumeLens(lens) {
   if (lensRun.running || state.chunks.length === 0) return;
-  if (cooldownSecondsLeft() > 0) return; // still waiting out the AI's limit
+  if (cooldownSecondsLeft() > 0) return;
   if (!state.lenses.includes(lens)) return;
 
   const from = Number.isInteger(lens.resumeFrom) ? lens.resumeFrom : 0;
   await runLens({ lens, query: lens.query, color: lens.color, from });
 }
 
-// Checks the reading, from paragraph `from` onward, one section at a time.
-// With lens: null it builds a brand-new lens (created once the first section
-// comes back); with an existing lens it adds to that one.
+///////////////////////////////////////////////////////////////////////////
+//  Function: runLens
+//  Inputs: { lens, query, color, from } — lens is null to build a new lens
+//    (created once the first section comes back) or an existing lens to add
+//    to; from is the paragraph to start checking at
+//  Outputs: Adds hits to the lens as each section finishes and reports the
+//    outcome in the status line
+//  Summary: Checks the reading one section at a time. Only a run that checks
+//    every section marks the lens complete.
+///////////////////////////////////////////////////////////////////////////
 async function runLens({ lens: existingLens, query, color, from }) {
   const startedWith = state.chunks;
   const total = startedWith.length;
@@ -436,7 +528,7 @@ async function runLens({ lens: existingLens, query, color, from }) {
         query: lensQuery,
         section: sections[i],
         sentenceSpans,
-        skipCorrection: lens !== null, // the lens's name only needs its spelling fixed once
+        skipCorrection: lens !== null, // the lens name only needs its spelling fixed once
         label,
         ctx
       });
@@ -444,7 +536,7 @@ async function runLens({ lens: existingLens, query, color, from }) {
       if (result.cancelled) { stopped = true; break; }
       if (result.tooLong) {
         skipped++;
-        if (lens) lens.resumeFrom = nextStart(i); // retrying it would only fail again
+        if (lens) lens.resumeFrom = nextStart(i); // retrying would only fail again
         continue;
       }
       if (!result.ok) {
@@ -460,7 +552,7 @@ async function runLens({ lens: existingLens, query, color, from }) {
           query: lensQuery,
           color,
           hits: [],
-          incomplete: true // until every section has been checked
+          incomplete: true
         };
         state.lenses.push(lens);
         state.activeLensId = lens.id; // show the new lens straight away
@@ -470,8 +562,8 @@ async function runLens({ lens: existingLens, query, color, from }) {
         if (input) input.value = "";
       }
 
-      // Skip any sentence the lens already has (only matters when a lens
-      // saved without resume information is re-checked from the start).
+      // Skip sentences the lens already has (only possible when a lens saved
+      // without resume information is re-checked from the start).
       const fresh = result.hits.filter(h => !lens.hits.some(e =>
         e.paragraphId === h.paragraphId &&
         e.startOffset === h.startOffset &&
@@ -488,7 +580,6 @@ async function runLens({ lens: existingLens, query, color, from }) {
     lensRun.currentLensId = null;
   }
 
-  // Only a run that checked every section gets to call itself complete.
   if (lens && !stopped && !failure && skipped === 0) {
     lens.incomplete = false;
     delete lens.resumeFrom;
@@ -496,13 +587,12 @@ async function runLens({ lens: existingLens, query, color, from }) {
 
   syncLensButton();
 
-  // Gave up on the AI's rate limit: keep "Check the rest" disabled for as long
-  // as the worker said it would take to free up (plus a second of margin).
+  // Keep "Check the rest" disabled for as long as the worker said the rate
+  // limit would take to free up, plus a second of margin.
   if (failure && failureWait) startResumeCooldown(failureWait + 1);
 
-  // If another document was opened meanwhile, or the student deleted the
-  // lens while it was being built, there's nothing to report — just clear
-  // the progress text rather than leave it behind.
+  // Another document was opened, or the lens was deleted mid-run: nothing
+  // to report.
   const lensDeleted = lens !== null && !state.lenses.includes(lens);
   if (isStale() || lensDeleted) {
     setLensStatus("");
@@ -537,9 +627,20 @@ async function runLens({ lens: existingLens, query, color, from }) {
   }
 }
 
+///////////////////////////////////////////////////////////////////////////
+// Lens list
+///////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: renderLensList
+//  Inputs: None
+//  Outputs: Redraws #lens-list: each lens with its color picker, Apply and
+//    Delete buttons, partial-coverage note, and, for the applied lens, the
+//    navigation panel and legend (no-op if the tab is closed)
+///////////////////////////////////////////////////////////////////////////
 function renderLensList() {
   const list = document.getElementById("lens-list");
-  if (!list) return; // Lenses tab isn't currently open
+  if (!list) return;
 
   list.innerHTML = "";
 
@@ -579,17 +680,16 @@ function renderLensList() {
       lens.color = e.target.value;
       if (lens.id !== state.activeLensId) return;
 
-      // Repaint in place. Re-rendering the whole document (or this list,
-      // which would replace the colour picker mid-drag) on every input
-      // event is slow and resets the reader's scroll position.
+      // Repaint in place: re-rendering the document (or this list, which
+      // would replace the picker mid-drag) on every input event is slow and
+      // resets the reader's scroll position.
       const byId = new Map(lens.hits.map(h => [h.id, h]));
       document.querySelectorAll("#document-pane .lens-hit").forEach(el => {
         const hit = byId.get(el.dataset.hitId);
         if (hit) el.style.cssText = lensHitStyle(lens.color, hit.strength);
       });
 
-      // The light wash over whole paragraphs, too. (A paragraph showing the
-      // green "incorrect provocation" color keeps it.)
+      // A paragraph showing the green "incorrect provocation" color keeps it.
       document.querySelectorAll("#document-pane p.lens-paragraph").forEach(pEl => {
         if (pEl.dataset.provIncorrect) return;
         pEl.style.backgroundColor = lensParagraphColor(lens.color);
@@ -629,6 +729,7 @@ function renderLensList() {
     main.append(label, colorEl, applyBtn, deleteBtn);
     item.appendChild(main);
 
+    // ---- Partial-coverage note and "Check the rest" ----
     if (lens.incomplete) {
       const note = document.createElement("div");
       note.className = "lens-note";
@@ -637,8 +738,8 @@ function renderLensList() {
         : "Only part of the reading was checked for this lens.";
       item.appendChild(note);
 
-      // Offer to continue unless a run is in progress, or there's nothing
-      // left (everything was checked, apart from sections too big to send).
+      // Not offered during a run, or when everything has been checked
+      // (apart from sections too big to send).
       const canResume =
         !lensRun.running &&
         (!Number.isInteger(lens.resumeFrom) || lens.resumeFrom < state.chunks.length);
@@ -653,7 +754,7 @@ function renderLensList() {
       }
     }
 
-    // ---- Navigation panel, only for the applied lens ----
+    // ---- Navigation panel and legend, only for the applied lens ----
     if (active) {
       const hits = sortedHits(lens);
       const idx = hits.findIndex(h => h.id === state.lensCurrentHitId);
@@ -716,6 +817,12 @@ function renderLensList() {
 // Navigation
 ///////////////////////////////////////////////////////////////////////////
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: goToHit
+//  Inputs: hitId
+//  Outputs: Makes that hit the current one: outlines it, scrolls it into
+//    view, and updates the counter and minimap
+///////////////////////////////////////////////////////////////////////////
 function goToHit(hitId) {
   const pane = document.getElementById("document-pane");
   if (!pane) return;
@@ -731,6 +838,12 @@ function goToHit(hitId) {
   refreshLensMinimap();
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: stepHit
+//  Inputs: direction (1 for next, -1 for previous)
+//  Outputs: Moves to the next or previous hit of the applied lens,
+//    wrapping around at either end
+///////////////////////////////////////////////////////////////////////////
 function stepHit(direction) {
   const lens = getActiveLens();
   if (!lens) return;
@@ -750,9 +863,15 @@ function stepHit(direction) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-// Adding passages the lens missed
+//  Function: addSelectionToActiveLens
+//  Inputs: None (reads the student's current selection)
+//  Outputs: Adds each selected passage to the applied lens as a "strong"
+//    user hit
+//  Summary: The reader paints one hit per piece of text, so a hit overlapping
+//    another could end up hidden (counted, but unreachable by navigation,
+//    popup, or minimap). The student's selection therefore replaces any hit
+//    it overlaps.
 ///////////////////////////////////////////////////////////////////////////
-
 function addSelectionToActiveLens() {
   const lens = getActiveLens();
   if (!lens) return;
@@ -774,10 +893,6 @@ function addSelectionToActiveLens() {
     );
     if (duplicate) return;
 
-    // The reader paints one hit per piece of text, so a hit that overlapped
-    // another could end up completely hidden (counted, but unreachable by
-    // navigation, popup or minimap). The student's own selection replaces
-    // whatever it overlaps.
     const overlaps = h =>
       h.paragraphId === sel.paragraphId &&
       h.startOffset < sel.endOffset &&
@@ -811,14 +926,16 @@ function addSelectionToActiveLens() {
 
 ///////////////////////////////////////////////////////////////////////////
 // "Why did this match?" popup
-//  Clicking a highlighted sentence in the reader shows the model's stated
-//  reason and lets the student dismiss the hit if they disagree. Judging
-//  the AI's judgment is the point, so this is deliberately one click away
-//  rather than hidden.
+//  Clicking a highlighted sentence shows the model's stated reason and lets
+//  the student dismiss the hit if they disagree. Judging the AI's judgment
+//  is the point, so it's deliberately one click away.
 ///////////////////////////////////////////////////////////////////////////
 
-let popupEl = null;
-
+///////////////////////////////////////////////////////////////////////////
+//  Function: closeLensPopup
+//  Inputs: None
+//  Outputs: Removes the popup if open
+///////////////////////////////////////////////////////////////////////////
 function closeLensPopup() {
   if (popupEl) {
     popupEl.remove();
@@ -826,6 +943,11 @@ function closeLensPopup() {
   }
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: openLensPopup
+//  Inputs: lens, hit, x, y (click position in viewport coordinates)
+//  Outputs: Shows the popup just below the click, kept on-screen
+///////////////////////////////////////////////////////////////////////////
 function openLensPopup(lens, hit, x, y) {
   closeLensPopup();
 
@@ -871,7 +993,6 @@ function openLensPopup(lens, hit, x, y) {
   document.body.appendChild(el);
   popupEl = el;
 
-  // Place it just below the click, kept on-screen.
   const width = el.offsetWidth;
   const height = el.offsetHeight;
   let left = Math.min(Math.max(8, x - 20), window.innerWidth - width - 8);
@@ -882,12 +1003,17 @@ function openLensPopup(lens, hit, x, y) {
   el.style.top = `${top}px`;
 }
 
-// Registered once on #document-pane by app.js.
+///////////////////////////////////////////////////////////////////////////
+//  Function: handleDocumentPaneClick
+//  Inputs: e (click event)
+//  Outputs: Opens the popup for the clicked lens hit
+//  Summary: Registered once on #document-pane by app.js. Ignored while the
+//    student is mid-selection (e.g. to highlight).
+///////////////////////////////////////////////////////////////////////////
 function handleDocumentPaneClick(e) {
   const hitEl = e.target instanceof Element ? e.target.closest(".lens-hit") : null;
   if (!hitEl) return;
 
-  // Don't pop up while the student is mid-selection (e.g. to highlight).
   const sel = window.getSelection();
   if (sel && !sel.isCollapsed) return;
 
@@ -900,7 +1026,6 @@ function handleDocumentPaneClick(e) {
   openLensPopup(lens, hit, e.clientX, e.clientY);
 }
 
-// Close on outside click or Escape. Registered once, at module load.
 document.addEventListener("click", (e) => {
   if (!popupEl) return;
   const target = e.target instanceof Element ? e.target : null;
@@ -915,11 +1040,17 @@ document.addEventListener("keydown", (e) => {
 ///////////////////////////////////////////////////////////////////////////
 // Minimap
 //  A thin strip beside the document's scrollbar with a tick for every hit
-//  of the applied lens, positioned by where it sits in the whole document.
-//  Shows at a glance how hits cluster (all in the intro? absent from the
-//  conclusion?) and lets the student jump to any of them.
+//  of the applied lens, placed by where it sits in the whole document. It
+//  shows how hits cluster (all in the intro? none in the conclusion?) and
+//  lets the student jump to any of them.
 ///////////////////////////////////////////////////////////////////////////
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: ensureMinimap
+//  Inputs: None
+//  Outputs: The #lens-minimap element, created beside #document-pane if it
+//    doesn't exist yet (null if the pane is missing)
+///////////////////////////////////////////////////////////////////////////
 function ensureMinimap() {
   let el = document.getElementById("lens-minimap");
   if (el) return el;
@@ -934,6 +1065,12 @@ function ensureMinimap() {
   return el;
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: refreshLensMinimap
+//  Inputs: None
+//  Outputs: Redraws the minimap ticks for the applied lens
+//  Summary: Draws nothing if there's no lens or the reader screen is hidden.
+///////////////////////////////////////////////////////////////////////////
 function refreshLensMinimap() {
   const minimap = ensureMinimap();
   if (!minimap) return;
@@ -942,7 +1079,6 @@ function refreshLensMinimap() {
 
   const lens = getActiveLens();
   const pane = document.getElementById("document-pane");
-  // Nothing to measure if there's no lens, or the reader screen is hidden.
   if (!lens || !pane || pane.clientHeight === 0 || pane.scrollHeight === 0) return;
 
   const paneTop = pane.getBoundingClientRect().top;

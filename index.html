@@ -10,6 +10,7 @@
 
 <body>
 
+    <!-- Login screen -->
     <div id="login-screen">
         <div class="auth-card">
             <h1>AI Document Reader</h1>
@@ -35,6 +36,7 @@
         </div>
     </div>
 
+    <!-- Home screen: the user's saved documents -->
     <div id="home-screen" style="display:none;">
         <div class="home-header">
             <h1>Your Documents</h1>
@@ -46,6 +48,7 @@
         <div id="home-document-list"></div>
     </div>
 
+    <!-- Upload screen: paste text or import a file -->
     <div id="upload-screen" style="display:none;">
         <h1>AI Document Reader</h1>
 
@@ -75,12 +78,13 @@
         <button id="start-reading">Start Reading</button>
     </div>
 
+    <!-- Reader screen -->
     <div id="reader-screen" style="display:none;">
 
-        <!-- Left: Document Viewer -->
+        <!-- Left: document viewer -->
         <div id="document-pane"></div>
 
-        <!-- Right: Sidebar -->
+        <!-- Right: sidebar -->
         <div id="tool-pane">
 
             <div id="reader-header-row">
@@ -96,15 +100,15 @@
                 <button data-tab="annotations">Annotations</button>
             </div>
 
-            <!-- "?" button: opens the step-by-step tutorial for the active tab (modules/help.js) -->
+            <!-- "?" button: opens the tutorial for the active tab (help.js) -->
             <div id="tool-help-row">
                 <button id="tool-help-btn" type="button" class="help-btn" title="How this tab works"
                     aria-label="How this tab works" aria-haspopup="dialog" aria-expanded="false">?</button>
             </div>
 
+            <!-- Annotation tools, shown only on the Annotations tab -->
             <div id="annotation-tools">
 
-                <!-- Highlight Color / Highlight / Unhighlight Row -->
                 <div class="button-row highlight-row">
                     <div class="highlight-controls">
                         <input id="highlight-color" type="color" value="#ffff00" class="lens-color-picker" title="Highlight color">
@@ -113,13 +117,11 @@
                     <button id="btn-unhighlight" class="btn-secondary">Unhighlight</button>
                 </div>
 
-                <!-- Bookmark / Add Note Row -->
                 <div class="button-row">
                     <button id="btn-bookmark" class="btn-primary">Bookmark</button>
                     <button id="btn-add-note" class="btn-primary">Add Note</button>
                 </div>
 
-                <!-- Bookmark Input Box -->
                 <div id="bookmark-input-container" style="display:none; flex-direction:column; margin-top:10px;">
                     <input id="bookmark-input" type="text" placeholder="Bookmark name..."
                         style="padding:8px; border:1px solid #ccc; border-radius:6px; box-sizing:border-box;">
@@ -130,13 +132,11 @@
                     </div>
                 </div>
 
-                <!-- Bookmark List -->
                 <div id="bookmark-list" style="margin-top:15px;">
                     <button id="bookmark-toggle" style="margin-bottom:8px;">Bookmarks ▼</button>
                     <div id="bookmark-items" style="display:none;"></div>
                 </div>
 
-                <!-- Note Input Box -->
                 <div id="note-input-container" style="display:none; flex-direction:column;">
                     <textarea id="note-input" placeholder="Type your note..."></textarea>
 
@@ -148,15 +148,14 @@
 
             </div>
 
-            <div id="tool-content">
-                <!-- Phase 6–8 modules will render here -->
-            </div>
+            <!-- The active tab's content renders here -->
+            <div id="tool-content"></div>
 
         </div>
 
     </div>
 
-    <!-- Note Popup -->
+    <!-- Note popup -->
     <div id="note-popup" style="display:none;">
         <div id="note-popup-text"></div>
         <div class="note-popup-actions">
@@ -166,7 +165,7 @@
         </div>
     </div>
 
-    <!-- Bookmark Popup -->
+    <!-- Bookmark popup -->
     <div id="bookmark-popup" style="display:none;">
         <div id="bookmark-popup-text"></div>
         <div class="bookmark-popup-actions">
@@ -176,12 +175,10 @@
         </div>
     </div>
 
-
-    <!-- PDF text extraction (pdf.js) -->
+    <!-- PDF text extraction (pdf.js). The worker script is pinned to the same
+         version so the two never drift out of sync. -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
     <script>
-      // pdf.js needs a matching worker script; point it at the same
-      // pinned CDN version so they never drift out of sync.
       pdfjsLib.GlobalWorkerOptions.workerSrc =
         "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
     </script>

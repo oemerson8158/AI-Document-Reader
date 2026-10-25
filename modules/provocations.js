@@ -1,10 +1,17 @@
 ///////////////////////////////////////////////////////////////////////////
 // provocations.js
-//  This file implements the provocation engine for the AI Document Reader.
-//  Its purpose is to generate thoughtful questions for students based on
-//  the document they are reading, aligned with either Analysis or Memorize
-//  mode. It also evaluates student responses and provides targeted feedback
-//  to guide deeper understanding.
+//  Implements the provocation engine: generates questions about the
+//  document that match the reading purpose (Analysis or Memorize), then
+//  checks the student's answers and gives targeted feedback.
+//
+//  A long reading can't go to the AI in one request, so it is cut into
+//  sections and sent one at a time (see worker-sections.js). Provocations
+//  appear as each section finishes, and Stop keeps whatever is there.
+//
+//  Module-level state and listeners are set up once, when the module first
+//  loads. Every DOM lookup happens at the moment it's needed and no-ops if
+//  the element isn't on screen, so nothing breaks when another sidebar tab
+//  is open.
 //
 //  Oliver Emerson - 2025-2026
 ///////////////////////////////////////////////////////////////////////////
@@ -14,9 +21,26 @@ import { splitIntoSections, requestWithRetry } from "./worker-sections.js";
 
 const WORKER_BASE_URL = "https://plain-band-2d43.oemerson8158.workers.dev";
 
-// Used when re-injecting the student's own previously-typed answer back into
-// innerHTML (e.g. a stray "</textarea>" or "&" in their answer would
-// otherwise break the markup).
+// Roughly how much text goes to the AI per request. Anything up to this is
+// one request; longer readings are split into evenly-sized sections.
+const SECTION_MAX_CHARS = 14000;
+
+// Generation state lives at module level so generation keeps going, and the
+// tab shows the right state, if the student switches tabs and back.
+const genState = {
+  running: false,
+  cancelRequested: false,
+  text: "",        // status line shown under the button
+  isError: false,
+  forChunks: null  // which document that status belongs to
+};
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: escapeHtml
+//  Inputs: str (string)
+//  Outputs: The string with &, <, >, and " escaped
+//  Summary: Makes the student's own typed text safe to put in innerHTML.
+///////////////////////////////////////////////////////////////////////////
 function escapeHtml(str) {
   return str
     .replace(/&/g, "&amp;")
@@ -26,32 +50,33 @@ function escapeHtml(str) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
-// Module-level state + rendering
-//
-// Everything below is registered/defined ONCE, when this module first
-// loads (ES modules only evaluate once, no matter how many times a
-// function inside them is called) — not re-created every time the
-// Provocations tab is opened. Every DOM element it touches is looked up
-// fresh, at the moment it's needed, and every function no-ops gracefully
-// if that element isn't currently in the document (e.g. the user is on a
-// different sidebar tab). This avoids two related bugs the previous
-// version had: (1) a new "provocation:selected" listener was registered
-// on every tab visit and never removed, so old listeners piled up
-// referencing DOM nodes from a previous tab visit that had since been
-// wiped out; (2) clicking a 💡 icon while a different tab (e.g.
-// Annotations) was open crashed, since #prov-detail didn't exist yet.
+// Rendering and answer checking
 ///////////////////////////////////////////////////////////////////////////
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: updateProvocationState
+//  Inputs: updated (a provocation object)
+//  Outputs: Replaces the matching provocation in state and re-renders
+//  Summary: Re-renders the sidebar list and the document (green highlight
+//    on incorrect answers, icon updates).
+///////////////////////////////////////////////////////////////////////////
 function updateProvocationState(updated) {
   const idx = state.provocations.findIndex(p => p.id === updated.id);
   if (idx !== -1) state.provocations[idx] = updated;
   renderProvocationList();
-  renderDocument(); // for green highlight on incorrect / icon updates
+  renderDocument();
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: renderProvocationList
+//  Inputs: None
+//  Outputs: Shows the status line (progress, errors, or "N provocations
+//    ready") in #prov-list
+//  Summary: No-ops if the Provocations tab isn't open.
+///////////////////////////////////////////////////////////////////////////
 function renderProvocationList() {
   const listEl = document.getElementById("prov-list");
-  if (!listEl) return; // Provocations tab isn't currently open
+  if (!listEl) return;
 
   // A status message left over from a different document shouldn't show here.
   if (!genState.running && genState.forChunks !== state.chunks) {
@@ -77,9 +102,18 @@ function renderProvocationList() {
   }
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: renderDetail
+//  Inputs: prov (a provocation object)
+//  Outputs: Fills #prov-detail with the question, answer box, feedback, and
+//    the "include in summary" checkbox, and wires up Submit
+//  Summary: Submitting sends the answer to /provocations/check. A failed
+//    check leaves the question unanswered and shows the error instead of
+//    recording a wrong answer. No-ops if the Provocations tab isn't open.
+///////////////////////////////////////////////////////////////////////////
 function renderDetail(prov) {
   const detailEl = document.getElementById("prov-detail");
-  if (!detailEl) return; // Provocations tab isn't currently open
+  if (!detailEl) return;
 
   const alreadyAnswered = prov.status === "correct" || prov.status === "incorrect";
 
@@ -100,8 +134,6 @@ function renderDetail(prov) {
     </div>
   `;
 
-  // If this provocation was already answered, show the prior result
-  // instead of a blank feedback area.
   const feedbackEl = document.getElementById("prov-feedback");
   if (alreadyAnswered) {
     feedbackEl.className = prov.status;
@@ -171,52 +203,37 @@ function renderDetail(prov) {
     };
 
     updateProvocationState(updated);
-    renderDetail(updated); // re-render: shows feedback, restores answer text, and adds the "include in summary" checkbox
+    renderDetail(updated); // shows the feedback, restores the answer text, adds the checkbox
   };
 }
 
-// Registered exactly once, ever — this module is only evaluated once by
-// the browser regardless of how many times loadProvocationsUI() below is
-// called. If the Provocations tab isn't open when this fires, renderDetail
-// simply no-ops instead of throwing.
+// Fired by app.js when a 💡 icon is clicked.
 window.addEventListener("provocation:selected", (event) => {
   const prov = state.provocations.find(p => p.id === event.detail.provId);
-  if (prov) {
-    renderDetail(prov);
-  }
+  if (prov) renderDetail(prov);
 });
 
 ///////////////////////////////////////////////////////////////////////////
 // Generating provocations
-//
-//  A long reading can't go to the AI in one request (see
-//  worker-sections.js), so it's cut into sections, sent one at a time, and
-//  the app waits out the AI's per-minute limit between them. Provocations
-//  appear as each section finishes, and the student can press Stop at any
-//  point and keep what's there. There's no limit on how many a reading
-//  gets: a longer reading simply takes longer and yields more.
 ///////////////////////////////////////////////////////////////////////////
 
-// Roughly how much text goes to the AI per request. Anything up to this is
-// a single request; longer readings are split into evenly-sized sections.
-const SECTION_MAX_CHARS = 14000;
-
-// Lives at module level (not inside the tab's UI) so generation keeps going,
-// and the tab shows the right state, if the student switches tabs and back.
-const genState = {
-  running: false,
-  cancelRequested: false,
-  text: "",        // status line shown under the button
-  isError: false,
-  forChunks: null  // which document that status belongs to
-};
-
+///////////////////////////////////////////////////////////////////////////
+//  Function: setGenStatus
+//  Inputs: text (string), isError (boolean)
+//  Outputs: Stores the status line and redraws it
+///////////////////////////////////////////////////////////////////////////
 function setGenStatus(text, isError = false) {
   genState.text = text;
   genState.isError = isError;
   renderProvocationList();
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: syncGenerateButton
+//  Inputs: None
+//  Outputs: Sets the button to "Generate Provocations", "Stop", or
+//    "Stopping..." to match genState
+///////////////////////////////////////////////////////////////////////////
 function syncGenerateButton() {
   const btn = document.getElementById("prov-generate");
   if (!btn) return;
@@ -232,8 +249,15 @@ function syncGenerateButton() {
   }
 }
 
-// Ask the worker for one section's provocations (waiting and retrying if
-// the AI is at its per-minute limit).
+///////////////////////////////////////////////////////////////////////////
+//  Function: requestSection
+//  Inputs: section (from splitIntoSections), label (status text), ctx
+//    ({ isStale, shouldStop })
+//  Outputs: { ok: true, provocations } or the failure result from
+//    requestWithRetry (cancelled, tooLong, or message)
+//  Summary: Asks the worker for one section's provocations, waiting and
+//    retrying if the AI is at its per-minute limit.
+///////////////////////////////////////////////////////////////////////////
 async function requestSection(section, label, ctx) {
   const result = await requestWithRetry({
     path: "/provocations",
@@ -249,7 +273,7 @@ async function requestSection(section, label, ctx) {
     fallbackMessage: "Couldn't generate provocations right now. Try again in a moment."
   });
 
-  if (!result.ok) return result; // cancelled, too long, or failed
+  if (!result.ok) return result;
 
   const provocations = (result.data.provocations || []).map(p => ({
     ...p,
@@ -260,6 +284,16 @@ async function requestSection(section, label, ctx) {
   return { ok: true, provocations };
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: generateProvocations
+//  Inputs: None
+//  Outputs: Replaces state.provocations with newly generated ones and
+//    reports the outcome in the status line
+//  Summary: Sends the reading one section at a time. A run that finishes
+//    replaces the old provocations; a stopped or failed run keeps what it
+//    had collected. Asks for confirmation first if the student has answers
+//    that would be replaced.
+///////////////////////////////////////////////////////////////////////////
 async function generateProvocations() {
   const startedWith = state.chunks;
   const isStale = () => state.chunks !== startedWith;
@@ -268,8 +302,6 @@ async function generateProvocations() {
   const sections = splitIntoSections(startedWith, SECTION_MAX_CHARS);
   if (sections.length === 0) return;
 
-  // Regenerating replaces the current provocations, answers included, so
-  // check first — it can take a few minutes to get them back.
   const hasAnswers = state.provocations.some(p => p.status === "correct" || p.status === "incorrect");
   if (hasAnswers && !confirm("Generating new provocations replaces your current ones, including any answers you've written. Continue?")) {
     return;
@@ -307,8 +339,7 @@ async function generateProvocations() {
       renderDocument(); // show this section's icons right away
     }
 
-    // A run that finished cleanly replaces the old provocations even if it
-    // found none; a stopped or failed run keeps whatever it had collected.
+    // A clean run replaces the old provocations even if it found none.
     if (!stopped && !failure) {
       state.provocations = [...collected];
       renderDocument();
@@ -320,8 +351,7 @@ async function generateProvocations() {
 
   syncGenerateButton();
 
-  // If another document was opened meanwhile, don't report on it — just
-  // clear the progress text rather than leave it behind.
+  // Another document was opened meanwhile: don't report on it.
   if (isStale()) {
     setGenStatus("");
     return;
@@ -353,10 +383,9 @@ async function generateProvocations() {
 //  Function: loadProvocationsUI
 //  Inputs: None
 //  Outputs: Injects the Provocations tab UI into #tool-content
-//  Summary: Called fresh each time the Provocations tab is selected. Only
-//    sets up this-tab-visit-specific things (the Generate button); the
-//    actual provocation state/rendering logic lives at module level above
-//    so it isn't duplicated or re-registered on every visit.
+//  Summary: Called each time the tab is selected. Only sets up the Generate
+//    button; the state and rendering logic above is module-level, so a
+//    generation already in progress is reflected when the tab reopens.
 ///////////////////////////////////////////////////////////////////////////
 function loadProvocationsUI() {
   const content = document.getElementById("tool-content");
@@ -372,13 +401,12 @@ function loadProvocationsUI() {
       }
     </style>
     <div>
-      <button id="prov-generate" class="btn-primary">Generate provocations</button>
+      <button id="prov-generate" class="btn-primary">Generate Provocations</button>
       <div id="prov-list"></div>
       <div id="prov-detail" style="margin-top: 16px;"></div>
     </div>
   `;
 
-  // The button starts generation, and turns into "Stop" while it runs.
   document.getElementById("prov-generate").addEventListener("click", () => {
     if (genState.running) {
       genState.cancelRequested = true;
@@ -388,8 +416,6 @@ function loadProvocationsUI() {
     generateProvocations();
   });
 
-  // Reflect a generation that's already in progress (the student may have
-  // switched tabs and come back), and any provocations that already exist.
   syncGenerateButton();
   renderProvocationList();
 }

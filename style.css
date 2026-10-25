@@ -1,13 +1,89 @@
-/* AI Document Reader Styles */
+/* AI Document Reader styles */
 /* Oliver Emerson - 2025-2026 */
 
-/* Reset + base typography */
+/***************************************************************************
+ * BASE
+ ***************************************************************************/
+
 body {
   margin: 0;
   padding: 0;
   font-family: Arial, sans-serif;
   background-color: #f7f7f7;
   color: #333;
+}
+
+label {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: bold;
+}
+
+/***************************************************************************
+ * SHARED TOKENS
+ *  Button and text styles reused across screens and sidebar tabs.
+ ***************************************************************************/
+
+.btn-primary {
+  height: 42px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  background-color: #0078d4;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-primary:hover {
+  background-color: #005fa3;
+}
+
+.btn-primary:disabled {
+  background-color: #a8cdea;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  height: 42px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  background-color: #eee;
+  color: #333;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn-secondary:hover {
+  background-color: #ddd;
+}
+
+.btn-secondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Small subdued label above a group of content, e.g. "Existing Lenses" */
+.section-heading {
+  font-size: 0.85em;
+  font-weight: 700;
+  color: #555;
+  margin: 18px 0 10px;
+}
+
+/* Instructional or status copy under a tab's top controls */
+.tool-hint {
+  font-size: 0.9em;
+  color: #666;
+  margin: 0 0 14px;
+  line-height: 1.4;
 }
 
 /***************************************************************************
@@ -246,7 +322,6 @@ body {
  * UPLOAD SCREEN
  ***************************************************************************/
 
-/* Upload Screen Container */
 #upload-screen {
   max-width: 800px;
   margin: 40px auto;
@@ -256,13 +331,11 @@ body {
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
-/* Title */
 #upload-screen h1 {
   text-align: center;
   margin-bottom: 20px;
 }
 
-/* Document Input */
 #document-input {
   width: 100%;
   height: 300px;
@@ -275,14 +348,6 @@ body {
   margin-bottom: 20px;
 }
 
-/* Dropdown Label */
-label {
-  display: block;
-  margin-bottom: 6px;
-  font-weight: bold;
-}
-
-/* Purpose Dropdown */
 #purpose-select {
   width: 100%;
   padding: 10px;
@@ -293,7 +358,7 @@ label {
   box-sizing: border-box;
 }
 
-/* Analysis Focus Dropdown (shown only when Analysis is selected) */
+/* Shown only when the purpose is Analysis */
 #analysis-type-container {
   margin-bottom: 20px;
 }
@@ -307,12 +372,10 @@ label {
   box-sizing: border-box;
 }
 
-/* File Upload */
 #file-input {
   margin-bottom: 20px;
 }
 
-/* Start Reading Button */
 #start-reading {
   width: 100%;
   padding: 12px;
@@ -329,74 +392,6 @@ label {
 }
 
 /***************************************************************************
- * SHARED SIDEBAR TOKENS
- *  Reusable button and text styles so every sidebar tab (Provocations,
- *  Lenses, Annotations) matches the look already established by Rephrase.
- ***************************************************************************/
-
-.btn-primary {
-  height: 42px;
-  padding: 0 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 15px;
-  background-color: #0078d4;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.btn-primary:hover {
-  background-color: #005fa3;
-}
-
-.btn-primary:disabled {
-  background-color: #a8cdea;
-  cursor: not-allowed;
-}
-
-.btn-secondary {
-  height: 42px;
-  padding: 0 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 15px;
-  background-color: #eee;
-  color: #333;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.btn-secondary:hover {
-  background-color: #ddd;
-}
-
-.btn-secondary:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-/* Small subdued label above a group of content, e.g. "Existing Lenses" */
-.section-heading {
-  font-size: 0.85em;
-  font-weight: 700;
-  color: #555;
-  margin: 18px 0 10px;
-}
-
-/* Instructional/status copy under a tab's top controls */
-.tool-hint {
-  font-size: 0.9em;
-  color: #666;
-  margin: 0 0 14px;
-  line-height: 1.4;
-}
-
-/***************************************************************************
  * READER SCREEN
  ***************************************************************************/
 
@@ -406,7 +401,7 @@ label {
   height: 100dvh; /* accounts for mobile browser toolbars where supported */
 }
 
-/* Left Pane */
+/* Left pane: document */
 #document-pane {
   width: 60%;
   box-sizing: border-box;
@@ -415,19 +410,16 @@ label {
   background: #fafafa;
 }
 
-/* Paragraphs */
 #document-pane p {
   margin-bottom: 1rem;
   line-height: 1.5;
   position: relative;
-  /* Base/fallback gutter, sized for the common 0-1 icon case. Actual width
-     is set per-paragraph, dynamically, by layoutParagraphIcons() in app.js —
-     it only grows this wider on paragraphs that genuinely have multiple
-     stacked icons (notes/provocations/bookmarks). */
+  /* Fallback gutter for the 0-1 icon case; layoutParagraphIcons() in app.js
+     widens it per paragraph when there are more icons. */
   padding-right: 24px;
 }
 
-/* Right Pane */
+/* Right pane: sidebar */
 #tool-pane {
   width: 40%;
   box-sizing: border-box;
@@ -447,7 +439,6 @@ label {
   margin-bottom: 8px;
 }
 
-/* Tabs */
 #tool-tabs {
   display: flex;
   gap: 10px;
@@ -468,23 +459,23 @@ label {
   color: white;
 }
 
-/* Tool Content Area */
 #tool-content {
   flex: 1;
   min-height: 220px; /* never squeezed to nothing by the annotation tools above it */
   overflow-y: auto;
 }
 
-/* Annotation Tools */
+/***************************************************************************
+ * ANNOTATION TOOLS
+ ***************************************************************************/
+
 #annotation-tools {
   display: none;
   margin-bottom: 20px;
 }
 
-/* Button row — grid, not flex. Two columns of minmax(0, 1fr) means the row
-   is always split into exactly two equal halves by the track definition
-   itself, with no content-based minimum width for either side to fight
-   against. This is what makes Unhighlight reliably match Bookmark/Add Note. */
+/* Two equal columns by track definition, so the buttons in a row always match
+   in width regardless of their content. */
 .button-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -496,17 +487,15 @@ label {
   cursor: pointer;
 }
 
-/* Full-width buttons only; the small Enter/Cancel buttons keep their own size. */
+/* Full-width buttons only; the small Enter/Cancel buttons keep their size. */
 #annotation-tools .button-row button,
 #annotation-tools #bookmark-toggle,
 #annotation-tools #bookmark-items button {
   width: 100%;
 }
 
-/* Row pairing the highlight color swatch with the Highlight/Unhighlight
-   buttons. .highlight-controls occupies the row's left grid column (same
-   width as the Bookmark/Add Note columns below); inside it, a small flex
-   layout splits that column between the fixed-size swatch and Highlight. */
+/* Highlight row: the color swatch and Highlight share the left column, with
+   the swatch fixed-size. */
 .highlight-row .highlight-controls {
   display: flex;
   align-items: center;
@@ -524,31 +513,11 @@ label {
   width: auto;
 }
 
-/* Highlight styling */
 .highlighted {
   background-color: yellow;
 }
 
-/* NOTE INPUT BOX */
-
-#note-input-container {
-  display: none;
-  flex-direction: column;
-  margin-top: 10px;
-}
-
-#note-input {
-  width: 100%;
-  height: 60px;
-  resize: vertical;
-  padding: 8px;
-  border: 1px solid #ccc;
-  border-radius: 6px;
-  box-sizing: border-box;
-}
-
-/* SUBMIT + CANCEL ROW */
-
+/* Shared by the note and bookmark inputs */
 .submit-row {
   display: flex;
   justify-content: flex-end;
@@ -584,7 +553,23 @@ label {
   background-color: #bbb;
 }
 
-/* NOTE ICONS */
+/* Notes */
+
+#note-input-container {
+  display: none;
+  flex-direction: column;
+  margin-top: 10px;
+}
+
+#note-input {
+  width: 100%;
+  height: 60px;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-sizing: border-box;
+}
 
 .note-icon,
 .provocation-icon {
@@ -594,8 +579,6 @@ label {
   user-select: none;
   right: 0;
 }
-
-/* NOTE POPUP */
 
 #note-popup {
   position: absolute;
@@ -634,7 +617,7 @@ label {
   opacity: 0.7;
 }
 
-/* BOOKMARK TOOL */
+/* Bookmarks */
 
 #bookmark-input-container {
   display: none;
@@ -688,7 +671,13 @@ label {
   background: #e0e0e0;
 }
 
-/* BOOKMARK POPUP */
+.bookmark-icon {
+  position: absolute;
+  cursor: pointer;
+  font-size: 16px;
+  user-select: none;
+  right: 0;
+}
 
 #bookmark-popup {
   position: absolute;
@@ -727,16 +716,40 @@ label {
   opacity: 0.7;
 }
 
-/* Bookmark icon */
-.bookmark-icon {
-  position: absolute;
-  cursor: pointer;
-  font-size: 16px;
-  user-select: none;
-  right: 0;
+/* Summary of notes and provocation responses */
+
+.summary-card {
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fafafa;
+  line-height: 1.6;
+  white-space: pre-wrap;
 }
 
-/* REPHRASE OUTPUT BOX */
+.summary-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+.summary-copy {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #333;
+  background: #eee;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.summary-copy:hover {
+  background: #ddd;
+}
+
+/***************************************************************************
+ * REPHRASE TOOL
+ ***************************************************************************/
 
 .output-box {
   width: 100%;
@@ -783,6 +796,11 @@ label {
 
 .rephrase-top-row button:hover {
   background-color: #005fa3;
+}
+
+.rephrase-top-row button:disabled {
+  background-color: #a8cdea;
+  cursor: not-allowed;
 }
 
 /***************************************************************************
@@ -856,40 +874,7 @@ label {
 }
 
 /***************************************************************************
- * ANNOTATIONS SUMMARY TOOL
- ***************************************************************************/
-
-.summary-card {
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  padding: 14px;
-  background: #fafafa;
-  line-height: 1.6;
-  white-space: pre-wrap;
-}
-
-.summary-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 8px;
-}
-
-.summary-copy {
-  padding: 4px 10px;
-  font-size: 12px;
-  color: #333;
-  background: #eee;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.summary-copy:hover {
-  background: #ddd;
-}
-
-/***************************************************************************
- * LENS TOOL (NEW)
+ * LENS TOOL
  ***************************************************************************/
 
 .lens-top-row {
@@ -944,7 +929,7 @@ label {
   overflow-wrap: anywhere;
 }
 
-/* Small badge after the lens name showing how many passages it holds */
+/* Badge after the lens name showing how many passages it holds */
 .lens-count {
   display: inline-block;
   margin-left: 8px;
@@ -1010,8 +995,8 @@ label {
   color: #8a5a00;
 }
 
-/* Shown on a lens that only covers part of the reading (still being built,
-   or stopped / interrupted before every section was checked) */
+/* Shown on a lens that covers only part of the reading (still being built,
+   or stopped or interrupted before every section was checked) */
 .lens-note {
   margin-top: 6px;
   font-size: 12px;
@@ -1019,7 +1004,6 @@ label {
   line-height: 1.4;
 }
 
-/* "Check the rest" button on a lens that only covers part of the reading */
 .lens-resume {
   margin-top: 8px;
   padding: 5px 12px;
@@ -1040,7 +1024,7 @@ label {
   cursor: not-allowed;
 }
 
-/* Previous / Next / Add selection panel, shown under the applied lens */
+/* Previous / Next / Add selection panel under the applied lens */
 .lens-nav {
   display: flex;
   align-items: center;
@@ -1207,51 +1191,10 @@ label {
 }
 
 /***************************************************************************
- * ACCESSIBILITY + SMALL SCREENS
+ * TAB HELP ("?" button and step-by-step tutorial popup)
  ***************************************************************************/
 
-button:focus-visible,
-select:focus-visible,
-input:focus-visible,
-textarea:focus-visible {
-  outline: 2px solid #0078d4;
-  outline-offset: 2px;
-}
-
-.rephrase-top-row button:disabled {
-  background-color: #a8cdea;
-  cursor: not-allowed;
-}
-
-@media (max-width: 800px) {
-  #reader-screen {
-    flex-direction: column;
-  }
-
-  #document-pane {
-    width: auto;
-    flex: 1 1 55%;
-    min-height: 0;
-  }
-
-  #tool-pane {
-    width: auto;
-    flex: 1 1 45%;
-    min-height: 0;
-    border-left: none;
-    border-top: 1px solid #ccc;
-  }
-
-  #lens-minimap {
-    display: none;
-  }
-}
-
-/***************************************************************************
- * TAB HELP ("?" button + step-by-step tutorial popup)
- ***************************************************************************/
-
-/* Thin row under the tabs holding the discreet "?" button */
+/* Thin row under the tabs holding the "?" button */
 #tool-help-row {
   display: none;
   justify-content: flex-end;
@@ -1415,4 +1358,41 @@ textarea:focus-visible {
 
 .help-popup-next:hover {
   background: #005fa3;
+}
+
+/***************************************************************************
+ * ACCESSIBILITY AND SMALL SCREENS
+ *  Last, so the small-screen rules override the base layout above.
+ ***************************************************************************/
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #0078d4;
+  outline-offset: 2px;
+}
+
+@media (max-width: 800px) {
+  #reader-screen {
+    flex-direction: column;
+  }
+
+  #document-pane {
+    width: auto;
+    flex: 1 1 55%;
+    min-height: 0;
+  }
+
+  #tool-pane {
+    width: auto;
+    flex: 1 1 45%;
+    min-height: 0;
+    border-left: none;
+    border-top: 1px solid #ccc;
+  }
+
+  #lens-minimap {
+    display: none;
+  }
 }
