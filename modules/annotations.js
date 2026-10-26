@@ -208,4 +208,4 @@ function loadAnnotationsUI() {
   });
 }
 
-export { loadAnnotationsUI, addAnnotation, createBookmark };
+export { loadAnnotationsUI, addAnnotation, createBookmark, copyTextToClipboard };

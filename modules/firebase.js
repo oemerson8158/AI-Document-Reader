@@ -33,7 +33,8 @@ import {
   query,
   where,
   orderBy,
-  serverTimestamp
+  serverTimestamp,
+  Timestamp
 } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 // A public client identifier, not a secret. Security comes from the
@@ -197,6 +198,50 @@ async function listUserDocuments(ownerId) {
   return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
+///////////////////////////////////////////////////////////////////////////
+// Share helpers ("Send a copy")
+//  A share is a snapshot of a document, stored under a random id that works
+//  as the link's secret. The security rules let any signed-in user read one
+//  share if they know its id (and it hasn't expired), but never list them.
+///////////////////////////////////////////////////////////////////////////
+
+const SHARES_COLLECTION = "shares";
+const SHARE_LIFETIME_DAYS = 30;
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: createShareRecord
+//  Inputs: ownerId (sender's uid), data (the snapshot's fields)
+//  Outputs: Promise<string> — the new share's id
+//  Summary: Stamps the share with an expiry date, after which the security
+//    rules stop allowing it to be read.
+///////////////////////////////////////////////////////////////////////////
+async function createShareRecord(ownerId, data) {
+  const expiresAt = Timestamp.fromDate(
+    new Date(Date.now() + SHARE_LIFETIME_DAYS * 24 * 60 * 60 * 1000)
+  );
+  const ref = await addDoc(collection(db, SHARES_COLLECTION), {
+    ownerId,
+    ...data,
+    createdAt: serverTimestamp(),
+    expiresAt
+  });
+  return ref.id;
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: getShareRecord
+//  Inputs: shareId
+//  Outputs: Promise<object | null> — { id, ...fields }, or null if the
+//    share doesn't exist
+//  Summary: A missing or expired share is refused by the security rules, so
+//    callers should expect a "permission-denied" error for those too.
+///////////////////////////////////////////////////////////////////////////
+async function getShareRecord(shareId) {
+  const snap = await getDoc(doc(db, SHARES_COLLECTION, shareId));
+  if (!snap.exists()) return null;
+  return { id: snap.id, ...snap.data() };
+}
+
 export {
   auth,
   signUpEmail,
@@ -209,5 +254,8 @@ export {
   renameDocumentRecord,
   deleteDocumentRecord,
   getDocumentRecord,
-  listUserDocuments
+  listUserDocuments,
+  SHARE_LIFETIME_DAYS,
+  createShareRecord,
+  getShareRecord
 };

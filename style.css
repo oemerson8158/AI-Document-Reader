@@ -319,6 +319,82 @@ label {
 }
 
 /***************************************************************************
+ * DIALOGS (Send a copy, Add a shared document)
+ ***************************************************************************/
+
+#modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.modal {
+  width: 100%;
+  max-width: 440px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 22px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.22);
+}
+
+.modal-title {
+  margin: 0 0 12px;
+  font-size: 1.15em;
+}
+
+.modal-text {
+  margin: 0 0 14px;
+  font-size: 0.95em;
+  line-height: 1.5;
+  color: #555;
+}
+
+.modal-link-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.modal-link-input {
+  flex: 1;
+  min-width: 0;
+  height: 42px;
+  padding: 0 10px;
+  font-size: 14px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-sizing: border-box;
+}
+
+.modal-copy-btn {
+  flex: 0 0 auto;
+}
+
+.modal-error {
+  margin: 0 0 14px;
+  font-size: 0.9em;
+  color: #b00;
+}
+
+.modal-error:empty {
+  display: none;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/***************************************************************************
  * UPLOAD SCREEN
  ***************************************************************************/
 
@@ -345,7 +421,20 @@ label {
   border: 1px solid #ccc;
   border-radius: 6px;
   box-sizing: border-box;
-  margin-bottom: 20px;
+  margin-bottom: 6px;
+}
+
+/* Live character count under the paste box */
+.char-count {
+  margin: 0 0 20px;
+  font-size: 0.85em;
+  color: #666;
+  text-align: right;
+}
+
+.char-count-over {
+  color: #b00;
+  font-weight: bold;
 }
 
 #purpose-select {

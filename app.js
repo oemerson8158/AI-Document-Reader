@@ -5,14 +5,15 @@
 //  the reader screen, and wires together the feature modules: annotations,
 //  topic lenses, Lexile rephrasing, and AI-generated provocations.
 //
-//  Sections, in order: state, screens, login, home, upload (file import),
-//  document rendering, paragraph icons, sidebar tabs, text selection,
-//  annotation tools (highlights, bookmarks, notes), and startup.
+//  Sections, in order: state, screens, login, home, sharing (send a copy),
+//  upload (file import), document rendering, paragraph icons, sidebar tabs,
+//  text selection, annotation tools (highlights, bookmarks, notes), and
+//  startup.
 //
 //  Oliver Emerson - 2025-2026
 ///////////////////////////////////////////////////////////////////////////
 
-import { addAnnotation, createBookmark, loadAnnotationsUI } from "./modules/annotations.js";
+import { addAnnotation, createBookmark, loadAnnotationsUI, copyTextToClipboard } from "./modules/annotations.js";
 import { initRephraseUI } from "./modules/rephrase.js";
 import {
   initLensUI,
@@ -35,7 +36,10 @@ import {
   renameDocumentRecord,
   deleteDocumentRecord,
   getDocumentRecord,
-  listUserDocuments
+  listUserDocuments,
+  SHARE_LIFETIME_DAYS,
+  createShareRecord,
+  getShareRecord
 } from "./modules/firebase.js";
 
 ///////////////////////////////////////////////////////////////////////////
@@ -277,8 +281,8 @@ window.addEventListener("scroll", closeDocMenu, true);
 //  Function: openDocMenu
 //  Inputs: anchor (the three-dots button), docRecord, itemEl (the row),
 //    titleEl (the row's title element)
-//  Outputs: Shows a menu with Rename and Delete under the button, or above
-//    it if there's no room below
+//  Outputs: Shows a menu with Rename, Make a copy, Send a copy, and Delete
+//    under the button, or above it if there's no room below
 ///////////////////////////////////////////////////////////////////////////
 function openDocMenu(anchor, docRecord, itemEl, titleEl) {
   closeDocMenu();
@@ -303,6 +307,8 @@ function openDocMenu(anchor, docRecord, itemEl, titleEl) {
   };
 
   const renameEntry = addEntry("Rename", "", () => startRenameDocument(docRecord, titleEl));
+  addEntry("Make a copy", "", () => makeCopyOfDocument(docRecord));
+  addEntry("Send a copy", "", () => openSendCopyDialog(docRecord));
   addEntry("Delete", "home-doc-menu-danger", () => deleteDocument(docRecord, itemEl));
 
   document.body.appendChild(menu);
@@ -395,6 +401,39 @@ async function deleteDocument(docRecord, itemEl) {
   if (listEl.children.length === 0) {
     listEl.innerHTML = `<p class="tool-hint">You don't have any documents yet — click "+ New Document" to get started.</p>`;
   }
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: makeCopyOfDocument
+//  Inputs: docRecord (a document from the home list)
+//  Outputs: Creates a new document in the student's own account, titled
+//    "Copy of <title>", and refreshes the home list
+//  Summary: Copies the last saved version, with everything in it: text,
+//    highlights, notes, bookmarks, lenses, provocations with their answers,
+//    and the annotations summary.
+///////////////////////////////////////////////////////////////////////////
+async function makeCopyOfDocument(docRecord) {
+  const name = docRecord.title || "Untitled document";
+
+  try {
+    await createDocumentRecord(state.currentUser.uid, {
+      title: `Copy of ${name}`.slice(0, 120),
+      purpose: docRecord.purpose || "analysis",
+      analysisType: docRecord.analysisType || "literary",
+      highlightColor: docRecord.highlightColor || "#ffff00",
+      chunks: docRecord.chunks || [],
+      annotations: docRecord.annotations || [],
+      annotationsSummary: docRecord.annotationsSummary || null,
+      provocations: docRecord.provocations || [],
+      lenses: docRecord.lenses || []
+    });
+  } catch (err) {
+    console.error("HOME: failed to copy document:", err);
+    alert("Couldn't make a copy of that document. Try again in a moment.");
+    return;
+  }
+
+  loadHomeScreen();
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -552,10 +591,291 @@ document.getElementById("back-to-documents").addEventListener("click", () => {
 
 document.getElementById("home-new-document").addEventListener("click", () => {
   document.getElementById("document-input").value = "";
+  updateCharCount();
   document.getElementById("file-input").value = "";
   document.getElementById("file-upload-status").textContent = "";
   showScreen("upload");
 });
+
+///////////////////////////////////////////////////////////////////////////
+// Sharing (send a copy)
+//  "Send a copy" saves a snapshot of a document as a share record and gives
+//  the sender a link (?share=<id>). A signed-in recipient who opens the link
+//  can add their own copy to their documents. Nothing is delivered
+//  automatically: the sender passes the link on. The copy includes
+//  everything in the document's last saved version: the text, highlights,
+//  notes, bookmarks, lenses, provocations with the sender's answers, and the
+//  annotations summary.
+///////////////////////////////////////////////////////////////////////////
+
+// Share id from the URL the app was opened with; handled once signed in.
+let pendingShareId = new URLSearchParams(window.location.search).get("share");
+
+// The open dialog's overlay, if any.
+let modalEl = null;
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: closeModal
+//  Inputs: None
+//  Outputs: Removes the open dialog, if any
+///////////////////////////////////////////////////////////////////////////
+function closeModal() {
+  if (modalEl) {
+    modalEl.remove();
+    modalEl = null;
+  }
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: openModal
+//  Inputs: title (string), contentEl (the dialog's body), actions
+//    ([{ label, className, onClick(button) }], shown as a row of buttons)
+//  Outputs: Shows a dialog over the page, replacing any open one. Escape or
+//    a click outside it closes it.
+///////////////////////////////////////////////////////////////////////////
+function openModal(title, contentEl, actions) {
+  closeModal();
+
+  const overlay = document.createElement("div");
+  overlay.id = "modal-overlay";
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeModal();
+  });
+
+  const modal = document.createElement("div");
+  modal.className = "modal";
+  modal.setAttribute("role", "dialog");
+  modal.setAttribute("aria-modal", "true");
+  modal.setAttribute("aria-label", title);
+
+  const heading = document.createElement("h3");
+  heading.className = "modal-title";
+  heading.textContent = title;
+
+  const actionRow = document.createElement("div");
+  actionRow.className = "modal-actions";
+  actions.forEach(({ label, className, onClick }) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = className;
+    btn.textContent = label;
+    btn.addEventListener("click", () => onClick(btn));
+    actionRow.appendChild(btn);
+  });
+
+  modal.append(heading, contentEl, actionRow);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  modalEl = overlay;
+}
+
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: buildShareUrl
+//  Inputs: shareId
+//  Outputs: A link to this app carrying the share id
+///////////////////////////////////////////////////////////////////////////
+function buildShareUrl(shareId) {
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.hash = "";
+  url.searchParams.set("share", shareId);
+  return url.toString();
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: openLinkDialog
+//  Inputs: url (the share link)
+//  Outputs: Shows the finished link with a Copy button
+///////////////////////////////////////////////////////////////////////////
+function openLinkDialog(url) {
+  const content = document.createElement("div");
+
+  const text = document.createElement("p");
+  text.className = "modal-text";
+  text.textContent = `Send this link to the person you want to share with. They'll need to sign in to add their copy. Anyone who has the link can add a copy, and it stops working after ${SHARE_LIFETIME_DAYS} days.`;
+
+  const row = document.createElement("div");
+  row.className = "modal-link-row";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.readOnly = true;
+  input.value = url;
+  input.className = "modal-link-input";
+  input.setAttribute("aria-label", "Share link");
+  input.addEventListener("focus", () => input.select());
+
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "btn-secondary modal-copy-btn";
+  copyBtn.textContent = "Copy";
+
+  let resetTimer = null;
+  copyBtn.addEventListener("click", async () => {
+    const ok = await copyTextToClipboard(url);
+    copyBtn.textContent = ok ? "Copied!" : "Couldn't copy";
+    clearTimeout(resetTimer);
+    resetTimer = setTimeout(() => { copyBtn.textContent = "Copy"; }, 2000);
+  });
+
+  row.append(input, copyBtn);
+  content.append(text, row);
+
+  openModal("Link ready", content, [
+    { label: "Done", className: "btn-primary", onClick: closeModal }
+  ]);
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: openSendCopyDialog
+//  Inputs: docRecord (a document from the home list)
+//  Outputs: Shows the Send a copy dialog; "Create link" saves a snapshot of
+//    the document's last saved version and shows its link
+//  Summary: The snapshot includes everything saved with the document,
+//    including the sender's notes and provocation answers, and the dialog
+//    says so.
+///////////////////////////////////////////////////////////////////////////
+function openSendCopyDialog(docRecord) {
+  const name = docRecord.title || "Untitled document";
+
+  const content = document.createElement("div");
+
+  const intro = document.createElement("p");
+  intro.className = "modal-text";
+  intro.textContent = `Create a link that lets someone add their own copy of "${name}" to their documents. The copy includes everything in the last saved version: the text, your highlights, notes, bookmarks, lenses, provocations, and your answers to them. Your own document isn't changed. Anyone who has the link can add a copy, so only send it to people you trust.`;
+
+  const error = document.createElement("p");
+  error.className = "modal-error";
+
+  content.append(intro, error);
+
+  openModal("Send a copy", content, [
+    { label: "Cancel", className: "btn-secondary", onClick: closeModal },
+    {
+      label: "Create link",
+      className: "btn-primary",
+      onClick: async (btn) => {
+        btn.disabled = true;
+        btn.textContent = "Creating...";
+        error.textContent = "";
+
+        try {
+          const shareId = await createShareRecord(state.currentUser.uid, {
+            title: name,
+            purpose: docRecord.purpose || "analysis",
+            analysisType: docRecord.analysisType || "literary",
+            highlightColor: docRecord.highlightColor || "#ffff00",
+            chunks: docRecord.chunks || [],
+            annotations: docRecord.annotations || [],
+            annotationsSummary: docRecord.annotationsSummary || null,
+            provocations: docRecord.provocations || [],
+            lenses: docRecord.lenses || []
+          });
+          openLinkDialog(buildShareUrl(shareId));
+        } catch (err) {
+          console.error("SHARE: failed to create share:", err);
+          error.textContent = "Couldn't create the link. Try again in a moment.";
+          btn.disabled = false;
+          btn.textContent = "Create link";
+        }
+      }
+    }
+  ]);
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: handleIncomingShare
+//  Inputs: None (reads pendingShareId)
+//  Outputs: Looks up the shared document and asks the recipient whether to
+//    add a copy; "Add to my documents" creates it under their account and
+//    refreshes the home list
+//  Summary: The share id is removed from the address bar first, so a page
+//    refresh doesn't prompt again. A missing or expired share is refused by
+//    the security rules and reported as an invalid or expired link.
+///////////////////////////////////////////////////////////////////////////
+async function handleIncomingShare() {
+  const shareId = pendingShareId;
+  pendingShareId = null;
+  document.getElementById("auth-share-note").style.display = "none";
+
+  const cleanUrl = new URL(window.location.href);
+  cleanUrl.searchParams.delete("share");
+  window.history.replaceState({}, "", cleanUrl.toString());
+
+  let share;
+  try {
+    share = await getShareRecord(shareId);
+  } catch (err) {
+    console.error("SHARE: failed to open shared document:", err);
+    alert(err && err.code === "permission-denied"
+      ? "This link is invalid or has expired. Ask the sender for a new one."
+      : "Couldn't open that shared document. Check your connection and try the link again.");
+    return;
+  }
+
+  if (!share) {
+    alert("This link is invalid or has expired. Ask the sender for a new one.");
+    return;
+  }
+
+  const wordCount = (share.chunks || []).reduce(
+    (n, c) => n + c.text.split(/\s+/).filter(Boolean).length,
+    0
+  );
+  const purposeLabel = share.purpose === "memorize" ? "Memorize" : "Analysis";
+  const hasExtras =
+    (share.annotations || []).length > 0 ||
+    (share.lenses || []).length > 0 ||
+    (share.provocations || []).length > 0;
+
+  const content = document.createElement("div");
+
+  const text = document.createElement("p");
+  text.className = "modal-text";
+  text.textContent = `"${share.title}" (${purposeLabel}, about ${wordCount.toLocaleString()} words) was shared with you. Add a copy to your documents?` +
+    (hasExtras ? " It includes the sender's highlights, notes, bookmarks, lenses, and provocations with their answers." : "");
+
+  const error = document.createElement("p");
+  error.className = "modal-error";
+
+  content.append(text, error);
+
+  openModal("Add a shared document", content, [
+    { label: "Not now", className: "btn-secondary", onClick: closeModal },
+    {
+      label: "Add to my documents",
+      className: "btn-primary",
+      onClick: async (btn) => {
+        btn.disabled = true;
+        btn.textContent = "Adding...";
+        error.textContent = "";
+
+        try {
+          await createDocumentRecord(state.currentUser.uid, {
+            title: share.title,
+            purpose: share.purpose || "analysis",
+            analysisType: share.analysisType || "literary",
+            highlightColor: share.highlightColor || "#ffff00",
+            chunks: share.chunks || [],
+            annotations: share.annotations || [],
+            annotationsSummary: share.annotationsSummary || null,
+            provocations: share.provocations || [],
+            lenses: share.lenses || []
+          });
+          closeModal();
+          loadHomeScreen();
+        } catch (err) {
+          console.error("SHARE: failed to add shared document:", err);
+          error.textContent = "Couldn't add that document. Try again in a moment.";
+          btn.disabled = false;
+          btn.textContent = "Add to my documents";
+        }
+      }
+    }
+  ]);
+}
 
 ///////////////////////////////////////////////////////////////////////////
 // Upload screen (paste text or import a file)
@@ -575,6 +895,60 @@ function syncAnalysisTypeVisibility() {
 }
 
 document.getElementById("purpose-select").addEventListener("change", syncAnalysisTypeVisibility);
+
+// Limits on new documents. Long readings take a long time on the free AI tier
+// (see worker-sections.js), and a document must fit in one Firestore record.
+// File size limits are only a safety net; the real gate is the character
+// limit, applied to the text extracted from a file.
+const MAX_DOCUMENT_CHARS = 60000;
+const MAX_FILE_BYTES = {
+  txt: 1 * 1024 * 1024,
+  pdf: 10 * 1024 * 1024,
+  docx: 10 * 1024 * 1024
+};
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: approxWords
+//  Inputs: chars
+//  Outputs: Rough word count (about 6 characters per word), rounded to 100
+///////////////////////////////////////////////////////////////////////////
+function approxWords(chars) {
+  return Math.round(chars / 6 / 100) * 100;
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: updateCharCount
+//  Inputs: None
+//  Outputs: Updates the live "N / 60,000 characters" counter under the paste
+//    box, turning it red when over the limit
+///////////////////////////////////////////////////////////////////////////
+function updateCharCount() {
+  const countEl = document.getElementById("char-count");
+  const length = document.getElementById("document-input").value.trim().length;
+  countEl.textContent = `${length.toLocaleString()} / ${MAX_DOCUMENT_CHARS.toLocaleString()} characters`;
+  countEl.classList.toggle("char-count-over", length > MAX_DOCUMENT_CHARS);
+}
+
+document.getElementById("document-input").addEventListener("input", updateCharCount);
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: isWithinLengthLimit
+//  Inputs: text (a new document's text)
+//  Outputs: true if it fits; otherwise shows a popup and returns false
+///////////////////////////////////////////////////////////////////////////
+function isWithinLengthLimit(text) {
+  const length = text.trim().length;
+  if (length <= MAX_DOCUMENT_CHARS) return true;
+
+  alert(
+    `This document is about ${approxWords(length).toLocaleString()} words ` +
+    `(${length.toLocaleString()} characters), which is over the limit of about ` +
+    `${approxWords(MAX_DOCUMENT_CHARS).toLocaleString()} words ` +
+    `(${MAX_DOCUMENT_CHARS.toLocaleString()} characters). Try a shorter document, ` +
+    `or paste in just the section you want to work with.`
+  );
+  return false;
+}
 
 ///////////////////////////////////////////////////////////////////////////
 //  Function: extractTextFromPdf
@@ -766,10 +1140,13 @@ function deriveTitleFromText(text) {
 //  Inputs: text, purpose, analysisType
 //  Outputs: Loads the document into state, creates its Firestore record,
 //    and shows the reader
-//  Summary: Shared by the paste-text and file-upload paths. If the record
-//    can't be created, the student can still read, but Save won't work.
+//  Summary: Shared by the paste-text and file-upload paths. Text over the
+//    length limit is rejected first, before anything is created. If the
+//    record can't be created, the student can still read, but Save won't work.
 ///////////////////////////////////////////////////////////////////////////
 async function createDocumentAndEnterReader(text, purpose, analysisType) {
+  if (!isWithinLengthLimit(text)) return;
+
   loadDocument(text, purpose, analysisType);
   state.documentTitle = deriveTitleFromText(text);
 
@@ -806,6 +1183,15 @@ document.getElementById("file-input").addEventListener("change", async (event) =
 
   const statusEl = document.getElementById("file-upload-status");
   const extension = file.name.split(".").pop().toLowerCase();
+
+  const maxBytes = MAX_FILE_BYTES[extension];
+  if (maxBytes && file.size > maxBytes) {
+    const toMb = bytes => (bytes / (1024 * 1024)).toFixed(1);
+    statusEl.textContent = "";
+    event.target.value = ""; // so the same file can be chosen again later
+    alert(`That file is ${toMb(file.size)} MB, which is over the ${toMb(maxBytes)} MB limit for .${extension} files. Try a smaller file, or paste in just the section you want to work with.`);
+    return;
+  }
 
   statusEl.textContent = extension === "pdf" || extension === "docx"
     ? "Reading file..."
@@ -1861,7 +2247,14 @@ document.getElementById("note-close").addEventListener("click", () => {
 ///////////////////////////////////////////////////////////////////////////
 
 syncAnalysisTypeVisibility();
+updateCharCount();
 setupTabs();
+
+// A share link opened while signed out: tell the student why they're being
+// asked to sign in.
+if (pendingShareId) {
+  document.getElementById("auth-share-note").style.display = "block";
+}
 
 // Drives which screen shows on load and after login or logout.
 onAuthChange((user) => {
@@ -1869,6 +2262,7 @@ onAuthChange((user) => {
   if (user) {
     showScreen("home");
     loadHomeScreen();
+    if (pendingShareId) handleIncomingShare();
   } else {
     showScreen("login");
   }
