@@ -1835,32 +1835,53 @@ document.getElementById("document-pane").addEventListener("mouseup", () => {
   captureSelection();
 });
 
-// Touch and keyboard selections never fire "mouseup", so two more listeners
-// cover them:
+///////////////////////////////////////////////////////////////////////////
+//  Function: captureLiveSelection
+//  Inputs: None
+//  Outputs: If text inside the document pane is selected right now, stores
+//    it (see captureSelection). Otherwise leaves the stored selection alone.
+//  Summary: Never clears. On iPadOS, tapping a sidebar button can collapse
+//    the selection before the click lands, and clearing would make the
+//    button do nothing.
+///////////////////////////////////////////////////////////////////////////
+function captureLiveSelection() {
+  if (state.chunks.length === 0) return;
+
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+
+  const pane = document.getElementById("document-pane");
+  if (!pane.contains(sel.anchorNode) || !pane.contains(sel.focusNode)) return;
+
+  captureSelection();
+}
+
+// Touch and keyboard selections never fire "mouseup", so these re-read the
+// selection at every point where it might have changed or be about to be used:
 //  - "selectionchange" fires whenever the selection moves, however it was
-//    made. It fires many times while a handle is dragged, so it's debounced.
-//    It only captures a non-empty selection inside the document pane and
-//    never clears one: on iPadOS, tapping a sidebar button (Highlight,
-//    Bookmark...) can collapse the selection before the click lands, and
-//    clearing would make the button do nothing.
-//  - A tap (touchend) in the pane re-reads the selection after a short
-//    delay, like mouseup does for a click.
+//    made, including while a touch handle is dragged to extend it. It fires
+//    many times per drag, so it's debounced.
+//  - Releasing a finger, pen, or mouse anywhere on the page. Dragging a
+//    selection handle can end in a cancelled pointer instead of a normal
+//    release, so both are listened for.
+//  - Pressing anything in the sidebar (before the press can collapse the
+//    selection), so Highlight, Add Note, Bookmark, Rephrase, and Add
+//    selection always act on what is selected right now, even if an earlier
+//    event was missed.
+//  - A tap (touchend) in the pane clears or re-reads the selection after a
+//    short delay, like mouseup does for a click.
 let selectionChangeTimer = null;
 
 document.addEventListener("selectionchange", () => {
   clearTimeout(selectionChangeTimer);
-  selectionChangeTimer = setTimeout(() => {
-    if (state.chunks.length === 0) return;
-
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
-
-    const pane = document.getElementById("document-pane");
-    if (!pane.contains(sel.anchorNode) || !pane.contains(sel.focusNode)) return;
-
-    captureSelection();
-  }, 200);
+  selectionChangeTimer = setTimeout(captureLiveSelection, 100);
 });
+
+["pointerup", "pointercancel"].forEach(type => {
+  document.addEventListener(type, () => setTimeout(captureLiveSelection, 150));
+});
+
+document.getElementById("tool-pane").addEventListener("pointerdown", captureLiveSelection, true);
 
 document.getElementById("document-pane").addEventListener("touchend", () => {
   setTimeout(() => {
