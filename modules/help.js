@@ -36,7 +36,9 @@ const TAB_HELP = {
       "Enter a specific topic or aspect of your reading you want to explore, then click create lens",
       "The tool will highlight sections of your reading related to your lens. You can cycle through these sections in the sidebar",
       "By clicking a specific section of your lens in the text, you can see why it was highlighted. You also have the option to remove it from the lens",
-      "You can also manually add sections to your lens in the sidebar"
+      "You can also manually add sections to your lens in the sidebar",
+      "To build a lens yourself, switch to Custom Lens, name it, pick a color, and click Create Custom Lens.",
+      "A custom lens will automatically include highlights you already made in the lens color and ones you make later. You can cycle through its sections like any other lens"
     ]
   },
   annotations: {

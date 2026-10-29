@@ -21,7 +21,8 @@ import {
   refreshLensMinimap,
   handleDocumentPaneClick,
   lensHitStyle,
-  lensParagraphColor
+  lensParagraphColor,
+  refreshCustomLenses
 } from "./modules/lens.js";
 import { loadProvocationsUI } from "./modules/provocations.js";
 import { setHelpTab, hideHelp } from "./modules/help.js";
@@ -1376,6 +1377,10 @@ function renderDocument() {
   const savedScroll = pane.scrollTop;
   pane.innerHTML = "";
 
+  // Custom lenses are a live view of the highlights, so they're brought up to
+  // date before anything is drawn.
+  refreshCustomLenses();
+
   const activeLens = state.lenses.find(l => l.id === state.activeLensId) || null;
 
   state.chunks.forEach(chunk => {
@@ -1398,9 +1403,10 @@ function renderDocument() {
       p.innerHTML = buildParagraphHtml(chunk.text, highlights, lensHits, activeLens);
     }
 
-    // A paragraph containing a lens hit gets a light wash of the lens color,
-    // lighter than the partial-match shade.
-    if (activeLens && lensHits.length > 0) {
+    // A paragraph containing a hit of an AI lens gets a light wash of the lens
+    // color, lighter than the partial-match shade. Custom lenses show only
+    // their own highlighted passages, so they get no wash.
+    if (activeLens && !activeLens.custom && lensHits.length > 0) {
       p.classList.add("lens-paragraph");
       p.style.backgroundColor = lensParagraphColor(activeLens.color);
     }

@@ -974,6 +974,50 @@ label {
   margin-bottom: 12px;
 }
 
+/* AI lens / Custom lens toggle above the input row */
+.lens-mode-toggle {
+  display: flex;
+  margin-bottom: 10px;
+}
+
+.lens-mode-btn {
+  flex: 1;
+  padding: 7px 10px;
+  font-size: 13px;
+  color: #333;
+  background: #eee;
+  border: 1px solid #ccc;
+  cursor: pointer;
+}
+
+.lens-mode-btn:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.lens-mode-btn:last-child {
+  margin-left: -1px;
+  border-radius: 0 6px 6px 0;
+}
+
+.lens-mode-btn:hover:not(:disabled):not(.lens-mode-active) {
+  background: #ddd;
+}
+
+.lens-mode-btn.lens-mode-active {
+  color: white;
+  background: #0078d4;
+  border-color: #0078d4;
+}
+
+.lens-mode-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.lens-top-row button {
+  white-space: nowrap;
+}
+
 .lens-input {
   flex: 2;
   min-width: 0;
@@ -1027,6 +1071,18 @@ label {
   background: #ddd;
   color: #444;
   font-size: 12px;
+  vertical-align: middle;
+}
+
+/* Marks a lens the student built themselves */
+.lens-custom-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: #d5dde5;
+  color: #333;
+  font-size: 11px;
   vertical-align: middle;
 }
 

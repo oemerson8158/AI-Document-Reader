@@ -15,8 +15,16 @@
 //  The lens appears after the first section and fills in as the rest
 //  finish; Stop keeps what's been found, and "Check the rest" resumes.
 //
+//  A custom lens is built by the student instead: no AI is involved. It
+//  automatically contains all text highlighted (with the Annotations
+//  highlight tool) in the lens's color, now and in the future. Each unbroken
+//  run of that color is one section, ending where unhighlighted text or a
+//  different highlight color begins. Its hits are recomputed from the
+//  highlights every time the document is rendered, and no paragraph wash is
+//  applied.
+//
 //  Shape of a lens (saved with the document):
-//    { id, query, color, incomplete?, resumeFrom?, hits: [ {
+//    { id, query, color, custom?, incomplete?, resumeFrom?, hits: [ {
 //        id, paragraphId, startOffset, endOffset,
 //        strength: "strong" | "partial",
 //        reason: string,
@@ -47,6 +55,7 @@ const lensRun = {
 let resumeCooldownUntil = 0; // timestamp (ms) when "Check the rest" can be used again
 let cooldownTimer = null;
 let popupEl = null;          // the "why did this match?" popup, if open
+let lensMode = "ai";         // "ai" or "custom": what the Create button makes
 
 ///////////////////////////////////////////////////////////////////////////
 // Shared helpers
@@ -253,20 +262,41 @@ function setLensStatus(message, kind) {
 ///////////////////////////////////////////////////////////////////////////
 //  Function: syncLensButton
 //  Inputs: None
-//  Outputs: Sets the button to "Create Lens", "Stop", or "Stopping..."
+//  Outputs: Sets the main button to "Create Lens", "Create Custom Lens",
+//    "Stop", or "Stopping...", and updates the AI/Custom toggle and the
+//    input's placeholder to match
+//  Summary: The toggle is disabled while an AI lens is being built, so the
+//    button can't change meaning mid-run.
 ///////////////////////////////////////////////////////////////////////////
 function syncLensButton() {
   const btn = document.getElementById("lens-submit");
   if (!btn) return;
+
+  const custom = lensMode === "custom";
 
   if (lensRun.running) {
     btn.textContent = lensRun.cancelRequested ? "Stopping..." : "Stop";
     btn.className = "btn-secondary";
     btn.disabled = lensRun.cancelRequested;
   } else {
-    btn.textContent = "Create Lens";
+    btn.textContent = custom ? "Create Custom Lens" : "Create Lens";
     btn.className = "btn-primary";
     btn.disabled = false;
+  }
+
+  [["lens-mode-ai", "ai"], ["lens-mode-custom", "custom"]].forEach(([id, mode]) => {
+    const toggleBtn = document.getElementById(id);
+    if (!toggleBtn) return;
+    toggleBtn.classList.toggle("lens-mode-active", lensMode === mode);
+    toggleBtn.setAttribute("aria-pressed", String(lensMode === mode));
+    toggleBtn.disabled = lensRun.running;
+  });
+
+  const input = document.getElementById("lens-input");
+  if (input) {
+    input.placeholder = custom
+      ? "Name for your custom lens"
+      : "Topic or question, e.g. emotion vs. evidence";
   }
 }
 
@@ -341,6 +371,11 @@ async function requestLensSection({ query, section, sentenceSpans, skipCorrectio
 function initLensUI() {
   const content = document.getElementById("tool-content");
   content.innerHTML = `
+    <div class="lens-mode-toggle" role="group" aria-label="Lens type">
+      <button type="button" id="lens-mode-ai" class="lens-mode-btn">AI lens</button>
+      <button type="button" id="lens-mode-custom" class="lens-mode-btn">Custom lens</button>
+    </div>
+
     <div class="lens-top-row">
       <input id="lens-input" class="lens-input" placeholder="Topic or question, e.g. emotion vs. evidence" />
       <input id="lens-color" type="color" value="#c0e7ff" class="lens-color-picker" />
@@ -358,17 +393,35 @@ function initLensUI() {
     lensRun.kind = "";
   }
 
+  const createLensForMode = () => {
+    if (lensMode === "custom") {
+      handleCreateCustomLens();
+    } else {
+      handleCreateLens();
+    }
+  };
+
   document.getElementById("lens-submit").addEventListener("click", () => {
     if (lensRun.running) {
       lensRun.cancelRequested = true;
       syncLensButton();
       return;
     }
-    handleCreateLens();
+    createLensForMode();
   });
 
   document.getElementById("lens-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !lensRun.running) handleCreateLens();
+    if (e.key === "Enter" && !lensRun.running) createLensForMode();
+  });
+
+  document.getElementById("lens-mode-ai").addEventListener("click", () => {
+    lensMode = "ai";
+    syncLensButton();
+  });
+
+  document.getElementById("lens-mode-custom").addEventListener("click", () => {
+    lensMode = "custom";
+    syncLensButton();
   });
 
   syncLensButton();
@@ -442,6 +495,141 @@ async function handleCreateLens() {
   if (!query || state.chunks.length === 0) return;
 
   await runLens({ lens: null, query, color: colorInput.value, from: 0 });
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: computeCustomHits
+//  Inputs: lens (a custom lens), highlightsByParagraph (Map of paragraph id
+//    -> that paragraph's highlight annotations, sorted by start)
+//  Outputs: One hit per unbroken run of text highlighted in the lens's color
+//  Summary: Uses the reader's own rule for which highlight shows where
+//    highlights overlap (the one starting earliest), so a section ends where
+//    unhighlighted text or a different highlight color begins.
+///////////////////////////////////////////////////////////////////////////
+function computeCustomHits(lens, highlightsByParagraph) {
+  const lensColor = (lens.color || "").toLowerCase();
+  const hits = [];
+
+  state.chunks.forEach(chunk => {
+    const highlights = highlightsByParagraph.get(chunk.id);
+    if (!highlights) return;
+
+    const len = chunk.text.length;
+    const clamp = n => Math.max(0, Math.min(len, n));
+
+    const points = new Set([0, len]);
+    highlights.forEach(h => { points.add(clamp(h.startOffset)); points.add(clamp(h.endOffset)); });
+    const cuts = Array.from(points).sort((a, b) => a - b);
+
+    const pushRun = run => hits.push({
+      id: `${lens.id}-${chunk.id}-${run.startOffset}`,
+      paragraphId: chunk.id,
+      startOffset: run.startOffset,
+      endOffset: run.endOffset,
+      strength: "strong",
+      reason: "",
+      source: "user"
+    });
+
+    let run = null;
+    for (let i = 0; i < cuts.length - 1; i++) {
+      const a = cuts[i];
+      const b = cuts[i + 1];
+
+      const shown = highlights.find(h => h.startOffset <= a && h.endOffset >= b);
+      const inLensColor = shown && (shown.color || "#ffff00").toLowerCase() === lensColor;
+
+      if (inLensColor) {
+        if (run) {
+          run.endOffset = b;
+        } else {
+          run = { startOffset: a, endOffset: b };
+        }
+      } else if (run) {
+        pushRun(run);
+        run = null;
+      }
+    }
+    if (run) pushRun(run);
+  });
+
+  return hits;
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: refreshCustomLenses
+//  Inputs: None
+//  Outputs: Recomputes the hits of every custom lens from the document's
+//    current highlights
+//  Summary: Called at the start of every renderDocument(), so a custom lens
+//    always reflects the highlights as they are now. If the current hit no
+//    longer exists, the current-hit marker is cleared.
+///////////////////////////////////////////////////////////////////////////
+function refreshCustomLenses() {
+  if (!state.lenses.some(l => l.custom)) return;
+
+  const highlightsByParagraph = new Map();
+  state.annotations
+    .filter(a => a.type === "highlight")
+    .sort((a, b) => a.startOffset - b.startOffset)
+    .forEach(a => {
+      if (!highlightsByParagraph.has(a.paragraphId)) highlightsByParagraph.set(a.paragraphId, []);
+      highlightsByParagraph.get(a.paragraphId).push(a);
+    });
+
+  state.lenses.forEach(lens => {
+    if (lens.custom) lens.hits = computeCustomHits(lens, highlightsByParagraph);
+  });
+
+  const active = getActiveLens();
+  if (active && state.lensCurrentHitId && !active.hits.some(h => h.id === state.lensCurrentHitId)) {
+    state.lensCurrentHitId = null;
+  }
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: handleCreateCustomLens
+//  Inputs: None
+//  Outputs: Creates a custom lens named from the sidebar input, in the
+//    chosen color, and applies it
+//  Summary: No AI is involved, so it's instant. The lens has no stored
+//    passages: it collects everything highlighted in its color (see
+//    refreshCustomLenses), including highlights made later.
+///////////////////////////////////////////////////////////////////////////
+function handleCreateCustomLens() {
+  if (lensRun.running || state.chunks.length === 0) return;
+
+  const input = document.getElementById("lens-input");
+  const colorInput = document.getElementById("lens-color");
+  if (!input || !colorInput) return;
+
+  const name = input.value.trim().slice(0, 200);
+  if (!name) {
+    setLensStatus("Enter a name for your custom lens first.", "warn");
+    return;
+  }
+
+  const lens = {
+    id: crypto.randomUUID(),
+    query: name,
+    color: colorInput.value,
+    custom: true,
+    hits: []
+  };
+  state.lenses.push(lens);
+  state.activeLensId = lens.id; // show the new lens straight away
+  state.lensCurrentHitId = null;
+  refreshCustomLenses();
+  input.value = "";
+
+  const n = lens.hits.length;
+  setLensStatus(
+    n === 0
+      ? "Created your custom lens. Nothing is highlighted in this color yet; anything you highlight in it is added automatically."
+      : `Created your custom lens with ${n} passage${n === 1 ? "" : "s"}. Anything you highlight in this color is added automatically.`
+  );
+  renderDocument();
+  renderLensList();
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -672,11 +860,34 @@ function renderLensList() {
     count.title = `${lens.hits.length} passage${lens.hits.length === 1 ? "" : "s"}`;
     label.appendChild(count);
 
+    if (lens.custom) {
+      const tag = document.createElement("span");
+      tag.className = "lens-custom-tag";
+      tag.textContent = "Custom";
+      label.appendChild(tag);
+    }
+
     const colorEl = document.createElement("input");
     colorEl.type = "color";
     colorEl.value = lens.color;
     colorEl.className = "lens-color-edit";
+
+    // A custom lens's color decides which highlights belong to it, so
+    // changing it re-collects them. That needs a full redraw, so it waits
+    // for the picker to be closed ("change") rather than every drag
+    // ("input"), which would replace the picker mid-drag.
+    if (lens.custom) {
+      colorEl.addEventListener("change", (e) => {
+        lens.color = e.target.value;
+        state.lensCurrentHitId = null;
+        renderDocument();
+        renderLensList();
+      });
+    }
+
     colorEl.addEventListener("input", (e) => {
+      if (lens.custom) return;
+
       lens.color = e.target.value;
       if (lens.id !== state.activeLensId) return;
 
@@ -788,7 +999,8 @@ function renderLensList() {
       addBtn.title = "Select text in the document first, then click this to add it to the lens";
       addBtn.addEventListener("click", addSelectionToActiveLens);
 
-      nav.append(prevBtn, counter, nextBtn, addBtn);
+      nav.append(prevBtn, counter, nextBtn);
+      if (!lens.custom) nav.append(addBtn);
       item.appendChild(nav);
 
       const legend = document.createElement("div");
@@ -802,10 +1014,14 @@ function renderLensList() {
       partialSwatch.className = "lens-swatch";
       partialSwatch.style.cssText = lensHitStyle(lens.color, "partial");
 
-      legend.append(
-        strongSwatch, " strong   ",
-        partialSwatch, " partial   ·   Click a highlighted sentence to see why it matched."
-      );
+      if (lens.custom) {
+        legend.append(strongSwatch, " everything highlighted in this color");
+      } else {
+        legend.append(
+          strongSwatch, " strong   ",
+          partialSwatch, " partial   ·   Click a highlighted sentence to see why it matched."
+        );
+      }
       item.appendChild(legend);
     }
 
@@ -870,11 +1086,12 @@ function stepHit(direction) {
 //  Summary: The reader paints one hit per piece of text, so a hit overlapping
 //    another could end up hidden (counted, but unreachable by navigation,
 //    popup, or minimap). The student's selection therefore replaces any hit
-//    it overlaps.
+//    it overlaps. Not used for custom lenses, which collect highlights
+//    automatically.
 ///////////////////////////////////////////////////////////////////////////
 function addSelectionToActiveLens() {
   const lens = getActiveLens();
-  if (!lens) return;
+  if (!lens || lens.custom) return;
 
   const selections = getCurrentSelections();
   if (!selections || selections.length === 0) {
@@ -1017,8 +1234,10 @@ function handleDocumentPaneClick(e) {
   const sel = window.getSelection();
   if (sel && !sel.isCollapsed) return;
 
+  // A custom lens is just the student's own highlights: there's no match to
+  // explain.
   const lens = getActiveLens();
-  if (!lens) return;
+  if (!lens || lens.custom) return;
 
   const hit = lens.hits.find(h => h.id === hitEl.dataset.hitId);
   if (!hit) return;
@@ -1094,7 +1313,7 @@ function refreshLensMinimap() {
     tick.className = "lens-tick" + (hit.id === state.lensCurrentHitId ? " lens-tick-current" : "");
     tick.style.top = `${(y / total) * 100}%`;
     tick.style.cssText += lensHitStyle(lens.color, hit.strength);
-    tick.title = hit.reason || "Passage you added";
+    tick.title = hit.reason || (lens.custom ? "Highlighted passage" : "Passage you added");
     tick.addEventListener("click", () => goToHit(hit.id));
     minimap.appendChild(tick);
   });
@@ -1108,5 +1327,6 @@ export {
   refreshLensMinimap,
   handleDocumentPaneClick,
   lensHitStyle,
-  lensParagraphColor
+  lensParagraphColor,
+  refreshCustomLenses
 };
