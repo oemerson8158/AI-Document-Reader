@@ -295,7 +295,7 @@ function syncLensButton() {
   const input = document.getElementById("lens-input");
   if (input) {
     input.placeholder = custom
-      ? "Name for your custom lens"
+      ? "Lens name"
       : "Topic or question, e.g. emotion vs. evidence";
   }
 }
@@ -372,8 +372,8 @@ function initLensUI() {
   const content = document.getElementById("tool-content");
   content.innerHTML = `
     <div class="lens-mode-toggle" role="group" aria-label="Lens type">
-      <button type="button" id="lens-mode-ai" class="lens-mode-btn">AI lens</button>
-      <button type="button" id="lens-mode-custom" class="lens-mode-btn">Custom lens</button>
+      <button type="button" id="lens-mode-ai" class="lens-mode-btn">AI Lens</button>
+      <button type="button" id="lens-mode-custom" class="lens-mode-btn">Custom Lens</button>
     </div>
 
     <div class="lens-top-row">
