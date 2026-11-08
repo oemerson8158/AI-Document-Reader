@@ -1038,6 +1038,8 @@ function renderLensList() {
 //  Inputs: hitId
 //  Outputs: Makes that hit the current one: outlines it, scrolls it into
 //    view, and updates the counter and minimap
+//  Summary: Hit ids come from saved data, so the id is escaped before being
+//    used in a selector.
 ///////////////////////////////////////////////////////////////////////////
 function goToHit(hitId) {
   const pane = document.getElementById("document-pane");
@@ -1046,7 +1048,7 @@ function goToHit(hitId) {
   state.lensCurrentHitId = hitId;
 
   pane.querySelectorAll(".lens-hit-current").forEach(el => el.classList.remove("lens-hit-current"));
-  const els = pane.querySelectorAll(`[data-hit-id="${hitId}"]`);
+  const els = pane.querySelectorAll(`[data-hit-id="${CSS.escape(hitId)}"]`);
   els.forEach(el => el.classList.add("lens-hit-current"));
   if (els[0]) els[0].scrollIntoView({ behavior: "smooth", block: "center" });
 
@@ -1289,6 +1291,7 @@ function ensureMinimap() {
 //  Inputs: None
 //  Outputs: Redraws the minimap ticks for the applied lens
 //  Summary: Draws nothing if there's no lens or the reader screen is hidden.
+//    Hit ids are escaped before being used in a selector.
 ///////////////////////////////////////////////////////////////////////////
 function refreshLensMinimap() {
   const minimap = ensureMinimap();
@@ -1304,7 +1307,7 @@ function refreshLensMinimap() {
   const total = pane.scrollHeight;
 
   sortedHits(lens).forEach(hit => {
-    const el = pane.querySelector(`[data-hit-id="${hit.id}"]`);
+    const el = pane.querySelector(`[data-hit-id="${CSS.escape(hit.id)}"]`);
     if (!el) return;
 
     const y = el.getBoundingClientRect().top - paneTop + pane.scrollTop;

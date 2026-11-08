@@ -411,22 +411,24 @@ async function deleteDocument(docRecord, itemEl) {
 //    "Copy of <title>", and refreshes the home list
 //  Summary: Copies the last saved version, with everything in it: text,
 //    highlights, notes, bookmarks, lenses, provocations with their answers,
-//    and the annotations summary.
+//    and the annotations summary. The saved data is validated on the way
+//    through (see sanitizeDocumentData).
 ///////////////////////////////////////////////////////////////////////////
 async function makeCopyOfDocument(docRecord) {
   const name = docRecord.title || "Untitled document";
+  const clean = sanitizeDocumentData(docRecord);
 
   try {
     await createDocumentRecord(state.currentUser.uid, {
       title: `Copy of ${name}`.slice(0, 120),
-      purpose: docRecord.purpose || "analysis",
-      analysisType: docRecord.analysisType || "literary",
-      highlightColor: docRecord.highlightColor || "#ffff00",
-      chunks: docRecord.chunks || [],
-      annotations: docRecord.annotations || [],
-      annotationsSummary: docRecord.annotationsSummary || null,
-      provocations: docRecord.provocations || [],
-      lenses: docRecord.lenses || []
+      purpose: clean.purpose,
+      analysisType: clean.analysisType,
+      highlightColor: clean.highlightColor,
+      chunks: clean.chunks,
+      annotations: clean.annotations,
+      annotationsSummary: clean.annotationsSummary,
+      provocations: clean.provocations,
+      lenses: clean.lenses
     });
   } catch (err) {
     console.error("HOME: failed to copy document:", err);
@@ -504,7 +506,9 @@ async function loadHomeScreen() {
 //  Function: openExistingDocument
 //  Inputs: docId — Firestore document id
 //  Outputs: Loads the saved record into state and shows the reader
-//  Summary: The reverse of saveCurrentDocument().
+//  Summary: The reverse of saveCurrentDocument(). The saved data is
+//    validated first (see sanitizeDocumentData), since a document added from
+//    a shared link was written by someone else.
 ///////////////////////////////////////////////////////////////////////////
 async function openExistingDocument(docId) {
   let record;
@@ -521,16 +525,18 @@ async function openExistingDocument(docId) {
     return;
   }
 
+  const clean = sanitizeDocumentData(record);
+
   state.currentDocId = docId;
-  state.documentTitle = record.title || "";
-  state.purpose = record.purpose || "";
-  state.analysisType = record.analysisType || "literary";
-  state.highlightColor = record.highlightColor || "#ffff00";
-  state.chunks = record.chunks || [];
-  state.annotations = record.annotations || [];
-  state.annotationsSummary = record.annotationsSummary || null;
-  state.provocations = record.provocations || [];
-  state.lenses = (record.lenses || []).map(normalizeLens);
+  state.documentTitle = clean.title;
+  state.purpose = clean.purpose;
+  state.analysisType = clean.analysisType;
+  state.highlightColor = clean.highlightColor;
+  state.chunks = clean.chunks;
+  state.annotations = normalizeHighlights(clean.annotations);
+  state.annotationsSummary = clean.annotationsSummary;
+  state.provocations = clean.provocations;
+  state.lenses = clean.lenses.map(normalizeLens); // chunks must be set first
   state.activeLensId = null;
   state.lensCurrentHitId = null;
 
@@ -542,17 +548,156 @@ async function openExistingDocument(docId) {
   showScreen("reader");
   renderDocument();
   renderBookmarkList();
+  markSaved();
+}
+
+///////////////////////////////////////////////////////////////////////////
+// Unsaved changes
+//  Rather than flagging every edit, the saveable content is serialized when
+//  the document is opened or saved, and compared with the current content
+//  only when it matters (leaving the reader, closing the tab).
+///////////////////////////////////////////////////////////////////////////
+
+let lastSavedSnapshot = null;
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: getSaveablePayload
+//  Inputs: None
+//  Outputs: The fields of the open document that Save writes to Firestore
+///////////////////////////////////////////////////////////////////////////
+function getSaveablePayload() {
+  return {
+    title: state.documentTitle,
+    purpose: state.purpose,
+    analysisType: state.analysisType,
+    highlightColor: state.highlightColor,
+    chunks: state.chunks,
+    annotations: state.annotations,
+    annotationsSummary: state.annotationsSummary,
+    provocations: state.provocations,
+    lenses: state.lenses
+  };
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: snapshotOf
+//  Inputs: payload (from getSaveablePayload)
+//  Outputs: A string for comparing two versions of the document
+//  Summary: The highlight color is left out, so picking a color alone
+//    doesn't trigger a "leave without saving?" prompt.
+///////////////////////////////////////////////////////////////////////////
+function snapshotOf(payload) {
+  const { highlightColor, ...rest } = payload;
+  return JSON.stringify(rest);
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: markSaved
+//  Inputs: None
+//  Outputs: Records the document as it is now as the saved version
+///////////////////////////////////////////////////////////////////////////
+function markSaved() {
+  lastSavedSnapshot = snapshotOf(getSaveablePayload());
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: isReaderOpen
+//  Inputs: None
+//  Outputs: true if the reader screen is showing
+///////////////////////////////////////////////////////////////////////////
+function isReaderOpen() {
+  return document.getElementById("reader-screen").style.display !== "none";
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: hasUnsavedChanges
+//  Inputs: None
+//  Outputs: true if the open document differs from its last saved version
+///////////////////////////////////////////////////////////////////////////
+function hasUnsavedChanges() {
+  return (
+    isReaderOpen() &&
+    !!state.currentDocId &&
+    lastSavedSnapshot !== null &&
+    snapshotOf(getSaveablePayload()) !== lastSavedSnapshot
+  );
+}
+
+window.addEventListener("beforeunload", (e) => {
+  if (hasUnsavedChanges()) {
+    e.preventDefault();
+    e.returnValue = "";
+  }
+});
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: confirmLeaveReader
+//  Inputs: None
+//  Outputs: Promise<boolean> — true if it's fine to leave the reader
+//  Summary: Resolves true straight away if nothing is unsaved. Otherwise asks
+//    whether to save first, leave anyway, or keep editing. (Dismissing the
+//    dialog with Escape or a click outside counts as keep editing.)
+///////////////////////////////////////////////////////////////////////////
+function confirmLeaveReader() {
+  return new Promise(resolve => {
+    if (!hasUnsavedChanges()) {
+      resolve(true);
+      return;
+    }
+
+    const content = document.createElement("div");
+
+    const text = document.createElement("p");
+    text.className = "modal-text";
+    text.textContent = "You have changes that haven't been saved: highlights, notes, bookmarks, lenses, or provocation answers. Save them before leaving?";
+
+    const error = document.createElement("p");
+    error.className = "modal-error";
+
+    content.append(text, error);
+
+    openModal("Unsaved changes", content, [
+      {
+        label: "Keep editing",
+        className: "btn-secondary",
+        onClick: () => { closeModal(); resolve(false); }
+      },
+      {
+        label: "Leave without saving",
+        className: "btn-secondary",
+        onClick: () => { closeModal(); resolve(true); }
+      },
+      {
+        label: "Save and leave",
+        className: "btn-primary",
+        onClick: async (btn) => {
+          btn.disabled = true;
+          btn.textContent = "Saving...";
+          error.textContent = "";
+
+          if (await saveCurrentDocument()) {
+            closeModal();
+            resolve(true);
+          } else {
+            btn.disabled = false;
+            btn.textContent = "Save and leave";
+            error.textContent = "Couldn't save. Try again, or leave without saving.";
+          }
+        }
+      }
+    ]);
+  });
 }
 
 ///////////////////////////////////////////////////////////////////////////
 //  Function: saveCurrentDocument
 //  Inputs: None
-//  Outputs: Writes the document's saveable state to Firestore
+//  Outputs: Promise<boolean> — true if the save worked
 //  Summary: Called by the Save button. Saves only durable content, not
 //    transient UI state such as the applied lens or a Rephrase draft.
 ///////////////////////////////////////////////////////////////////////////
 async function saveCurrentDocument() {
-  if (!state.currentDocId) return;
+  if (!state.currentDocId) return false;
 
   const statusEl = document.getElementById("save-status");
   const saveBtn = document.getElementById("save-document");
@@ -560,24 +705,22 @@ async function saveCurrentDocument() {
   statusEl.style.color = "";
   statusEl.textContent = "Saving...";
 
+  // Taken before the write, so anything changed while it's in flight still
+  // counts as unsaved.
+  const payload = getSaveablePayload();
+  const savedSnapshot = snapshotOf(payload);
+
   try {
-    await saveDocumentRecord(state.currentDocId, {
-      title: state.documentTitle,
-      purpose: state.purpose,
-      analysisType: state.analysisType,
-      highlightColor: state.highlightColor,
-      chunks: state.chunks,
-      annotations: state.annotations,
-      annotationsSummary: state.annotationsSummary,
-      provocations: state.provocations,
-      lenses: state.lenses
-    });
+    await saveDocumentRecord(state.currentDocId, payload);
+    lastSavedSnapshot = savedSnapshot;
     statusEl.textContent = "Saved.";
     setTimeout(() => { statusEl.textContent = ""; }, 2500);
+    return true;
   } catch (err) {
     console.error("SAVE: failed:", err);
     statusEl.textContent = "Couldn't save — try again.";
     statusEl.style.color = "#b00";
+    return false;
   } finally {
     saveBtn.disabled = false;
   }
@@ -585,7 +728,9 @@ async function saveCurrentDocument() {
 
 document.getElementById("save-document").addEventListener("click", saveCurrentDocument);
 
-document.getElementById("back-to-documents").addEventListener("click", () => {
+document.getElementById("back-to-documents").addEventListener("click", async () => {
+  if (!(await confirmLeaveReader())) return;
+  closeReader();
   showScreen("home");
   loadHomeScreen();
 });
@@ -794,7 +939,9 @@ function openSendCopyDialog(docRecord) {
 //    refreshes the home list
 //  Summary: The share id is removed from the address bar first, so a page
 //    refresh doesn't prompt again. A missing or expired share is refused by
-//    the security rules and reported as an invalid or expired link.
+//    the security rules and reported as an invalid or expired link. A share
+//    was written by someone else, so it is validated (see
+//    sanitizeDocumentData) before anything is shown or stored.
 ///////////////////////////////////////////////////////////////////////////
 async function handleIncomingShare() {
   const shareId = pendingShareId;
@@ -805,9 +952,9 @@ async function handleIncomingShare() {
   cleanUrl.searchParams.delete("share");
   window.history.replaceState({}, "", cleanUrl.toString());
 
-  let share;
+  let rawShare;
   try {
-    share = await getShareRecord(shareId);
+    rawShare = await getShareRecord(shareId);
   } catch (err) {
     console.error("SHARE: failed to open shared document:", err);
     alert(err && err.code === "permission-denied"
@@ -816,20 +963,26 @@ async function handleIncomingShare() {
     return;
   }
 
-  if (!share) {
+  if (!rawShare) {
     alert("This link is invalid or has expired. Ask the sender for a new one.");
     return;
   }
 
-  const wordCount = (share.chunks || []).reduce(
+  const share = sanitizeDocumentData(rawShare);
+  if (share.chunks.length === 0) {
+    alert("This shared document couldn't be read. Ask the sender for a new link.");
+    return;
+  }
+
+  const wordCount = share.chunks.reduce(
     (n, c) => n + c.text.split(/\s+/).filter(Boolean).length,
     0
   );
   const purposeLabel = share.purpose === "memorize" ? "Memorize" : "Analysis";
   const hasExtras =
-    (share.annotations || []).length > 0 ||
-    (share.lenses || []).length > 0 ||
-    (share.provocations || []).length > 0;
+    share.annotations.length > 0 ||
+    share.lenses.length > 0 ||
+    share.provocations.length > 0;
 
   const content = document.createElement("div");
 
@@ -856,14 +1009,14 @@ async function handleIncomingShare() {
         try {
           await createDocumentRecord(state.currentUser.uid, {
             title: share.title,
-            purpose: share.purpose || "analysis",
-            analysisType: share.analysisType || "literary",
-            highlightColor: share.highlightColor || "#ffff00",
-            chunks: share.chunks || [],
-            annotations: share.annotations || [],
-            annotationsSummary: share.annotationsSummary || null,
-            provocations: share.provocations || [],
-            lenses: share.lenses || []
+            purpose: share.purpose,
+            analysisType: share.analysisType,
+            highlightColor: share.highlightColor,
+            chunks: share.chunks,
+            annotations: share.annotations,
+            annotationsSummary: share.annotationsSummary,
+            provocations: share.provocations,
+            lenses: share.lenses
           });
           closeModal();
           loadHomeScreen();
@@ -1176,6 +1329,7 @@ async function createDocumentAndEnterReader(text, purpose, analysisType) {
   showScreen("reader");
   renderDocument();
   renderBookmarkList();
+  markSaved();
 }
 
 document.getElementById("file-input").addEventListener("change", async (event) => {
@@ -1316,6 +1470,169 @@ function escapeHtml(str) {
 }
 
 ///////////////////////////////////////////////////////////////////////////
+// Validating saved and shared data
+//  A document opened from the student's own list may have been added from a
+//  shared link, so its contents were written by someone else. Several of its
+//  fields end up in HTML attributes or inline styles, where an unexpected
+//  value could run script. Everything is therefore rebuilt from known-good
+//  pieces when a document is opened, copied, or added from a share: only the
+//  expected fields are kept, colors must be "#rrggbb", types are checked, and
+//  offsets must point inside real paragraphs. The Firestore security rules
+//  can't check what's inside a document, so this is the layer that does.
+///////////////////////////////////////////////////////////////////////////
+
+const SAFE_COLOR_RE = /^#[0-9a-f]{6}$/i;
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: safeColor
+//  Inputs: c (any value), fallback
+//  Outputs: c if it is a "#rrggbb" color, otherwise the fallback
+///////////////////////////////////////////////////////////////////////////
+function safeColor(c, fallback = "#ffff00") {
+  return typeof c === "string" && SAFE_COLOR_RE.test(c) ? c : fallback;
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: cleanString
+//  Inputs: v (any value), max (length cap)
+//  Outputs: v cut to max characters if it is a string, otherwise ""
+///////////////////////////////////////////////////////////////////////////
+function cleanString(v, max) {
+  return typeof v === "string" ? v.slice(0, max) : "";
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: validRange
+//  Inputs: item ({ paragraphId, startOffset, endOffset }), lengthOf (Map of
+//    paragraph id -> text length)
+//  Outputs: true if the item points at a non-empty span inside a real
+//    paragraph
+///////////////////////////////////////////////////////////////////////////
+function validRange(item, lengthOf) {
+  return (
+    lengthOf.has(item.paragraphId) &&
+    Number.isInteger(item.startOffset) &&
+    Number.isInteger(item.endOffset) &&
+    item.startOffset >= 0 &&
+    item.endOffset > item.startOffset &&
+    item.endOffset <= lengthOf.get(item.paragraphId)
+  );
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: sanitizeLens
+//  Inputs: lens (as saved), lengthOf (Map of paragraph id -> text length)
+//  Outputs: A clean copy of the lens, or null if it isn't an object
+//  Summary: A lens in the older keyword-based shape is kept in that shape
+//    (with its fields checked); normalizeLens converts it once the
+//    document's chunks are loaded.
+///////////////////////////////////////////////////////////////////////////
+function sanitizeLens(lens, lengthOf) {
+  if (!lens || typeof lens !== "object") return null;
+
+  const id = typeof lens.id === "string" ? cleanString(lens.id, 100) : crypto.randomUUID();
+  const color = safeColor(lens.color, "#c0e7ff");
+
+  if (typeof lens.query !== "string" || !Array.isArray(lens.hits)) {
+    const keywords = Array.isArray(lens.keywords) ? lens.keywords : [lens.keywords];
+    return {
+      id,
+      color,
+      keywords: keywords.filter(k => typeof k === "string").map(k => k.slice(0, 100)).slice(0, 50),
+      matches: (Array.isArray(lens.matches) ? lens.matches : []).filter(Number.isInteger)
+    };
+  }
+
+  const hits = lens.hits
+    .filter(h => h && typeof h.id === "string" && validRange(h, lengthOf))
+    .map(h => ({
+      id: cleanString(h.id, 200),
+      paragraphId: h.paragraphId,
+      startOffset: h.startOffset,
+      endOffset: h.endOffset,
+      strength: h.strength === "strong" ? "strong" : "partial",
+      reason: cleanString(h.reason, 300),
+      source: h.source === "user" ? "user" : "ai"
+    }));
+
+  const clean = { id, query: cleanString(lens.query, 400), color, hits };
+  if (lens.custom) clean.custom = true;
+  if (lens.incomplete) clean.incomplete = true;
+  if (Number.isInteger(lens.resumeFrom) && lens.resumeFrom >= 0) clean.resumeFrom = lens.resumeFrom;
+  return clean;
+}
+
+///////////////////////////////////////////////////////////////////////////
+//  Function: sanitizeDocumentData
+//  Inputs: raw (a saved or shared document record)
+//  Outputs: { title, purpose, analysisType, highlightColor, chunks,
+//    annotations, annotationsSummary, provocations, lenses }, rebuilt from
+//    known-good pieces only
+///////////////////////////////////////////////////////////////////////////
+function sanitizeDocumentData(raw) {
+  raw = raw && typeof raw === "object" ? raw : {};
+
+  const chunks = (Array.isArray(raw.chunks) ? raw.chunks : [])
+    .filter(c => c && Number.isInteger(c.id) && typeof c.text === "string")
+    .map(c => ({ id: c.id, text: c.text }));
+  const lengthOf = new Map(chunks.map(c => [c.id, c.text.length]));
+
+  const annotations = (Array.isArray(raw.annotations) ? raw.annotations : [])
+    .filter(a =>
+      a && typeof a.id === "string" &&
+      ["highlight", "note", "bookmark"].includes(a.type) &&
+      validRange(a, lengthOf)
+    )
+    .map(a => {
+      const out = {
+        id: cleanString(a.id, 100),
+        type: a.type,
+        paragraphId: a.paragraphId,
+        startOffset: a.startOffset,
+        endOffset: a.endOffset
+      };
+      if (a.type === "highlight") out.color = safeColor(a.color);
+      if (a.type === "note") out.noteText = cleanString(a.noteText, 5000);
+      if (a.type === "bookmark") out.name = cleanString(a.name, 200);
+      return out;
+    });
+
+  const provocations = (Array.isArray(raw.provocations) ? raw.provocations : [])
+    .filter(p =>
+      p && typeof p.id === "string" &&
+      lengthOf.has(p.paragraphId) &&
+      typeof p.question === "string"
+    )
+    .map(p => ({
+      id: cleanString(p.id, 100),
+      paragraphId: p.paragraphId,
+      focus: cleanString(p.focus, 50),
+      question: cleanString(p.question, 2000),
+      takeaway: cleanString(p.takeaway, 2000),
+      status: ["pending", "correct", "incorrect"].includes(p.status) ? p.status : "pending",
+      feedback: typeof p.feedback === "string" ? p.feedback.slice(0, 2000) : null,
+      answer: cleanString(p.answer, 5000),
+      includeInSummary: p.includeInSummary !== false
+    }));
+
+  return {
+    title: cleanString(raw.title, 120) || "Untitled document",
+    purpose: raw.purpose === "memorize" ? "memorize" : "analysis",
+    analysisType: ["literary", "textual", "rhetorical", "purpose", "research"].includes(raw.analysisType)
+      ? raw.analysisType
+      : "literary",
+    highlightColor: safeColor(raw.highlightColor),
+    chunks,
+    annotations,
+    annotationsSummary: typeof raw.annotationsSummary === "string" ? raw.annotationsSummary.slice(0, 10000) : null,
+    provocations,
+    lenses: (Array.isArray(raw.lenses) ? raw.lenses : [])
+      .map(l => sanitizeLens(l, lengthOf))
+      .filter(Boolean)
+  };
+}
+
+///////////////////////////////////////////////////////////////////////////
 //  Function: buildParagraphHtml
 //  Inputs: text (the paragraph), highlights (the student's highlight
 //    annotations), lensHits (hits from the applied lens), lens
@@ -1324,6 +1641,8 @@ function escapeHtml(str) {
 //    cut at every boundary any of them has, and each piece is styled by
 //    whichever highlight and/or lens hit covers it. The lens shading is the
 //    outer span and the highlight the inner one, so both stay visible.
+//    Colors and ids go into attributes, so colors are checked and ids
+//    escaped here as well as when a document is opened.
 ///////////////////////////////////////////////////////////////////////////
 function buildParagraphHtml(text, highlights, lensHits, lens) {
   const len = text.length;
@@ -1345,7 +1664,7 @@ function buildParagraphHtml(text, highlights, lensHits, lens) {
 
     const highlight = highlights.find(h => h.startOffset <= a && h.endOffset >= b);
     if (highlight) {
-      const color = highlight.color || "#ffff00";
+      const color = safeColor(highlight.color);
       piece = `<span class="highlighted" style="background-color:${color};">${piece}</span>`;
     }
 
@@ -1354,7 +1673,7 @@ function buildParagraphHtml(text, highlights, lensHits, lens) {
     const hit = covering.find(h => h.strength === "strong") || covering[0];
     if (hit && lens) {
       const current = hit.id === state.lensCurrentHitId ? " lens-hit-current" : "";
-      piece = `<span class="lens-hit${current}" data-hit-id="${hit.id}" style="${lensHitStyle(lens.color, hit.strength)}">${piece}</span>`;
+      piece = `<span class="lens-hit${current}" data-hit-id="${escapeHtml(String(hit.id))}" style="${lensHitStyle(lens.color, hit.strength)}">${piece}</span>`;
     }
 
     html += piece;
@@ -1669,6 +1988,31 @@ function resetTransientState() {
 }
 
 ///////////////////////////////////////////////////////////////////////////
+//  Function: closeReader
+//  Inputs: None
+//  Outputs: Empties the open document's state and clears the reader
+//  Summary: Called when the student leaves the reader (or signs out).
+//    Replacing state.chunks is what tells a lens or provocation run still in
+//    flight that its document is gone, so it stops instead of carrying on
+//    against a hidden reader.
+///////////////////////////////////////////////////////////////////////////
+function closeReader() {
+  state.currentDocId = null;
+  state.chunks = [];
+  state.annotations = [];
+  state.annotationsSummary = null;
+  state.provocations = [];
+  state.lenses = [];
+  state.activeLensId = null;
+  state.lensCurrentHitId = null;
+  lastSavedSnapshot = null;
+
+  resetTransientState();
+  resetReaderView();
+  document.getElementById("document-pane").innerHTML = "";
+}
+
+///////////////////////////////////////////////////////////////////////////
 //  Function: loadRephraseUI
 //  Inputs: None
 //  Outputs: Injects the Rephrase tab into #tool-content and wires it to
@@ -1718,7 +2062,10 @@ function loadRephraseUI() {
     setResult: (text) => {
       state.rephrase.result = text;
 
+      // The tab may have been closed while a request was still running.
       const box = document.getElementById("rephrase-output");
+      if (!box) return;
+
       box.style.display = "block";
       box.value = text;
 
@@ -1900,6 +2247,75 @@ document.getElementById("document-pane").addEventListener("touchend", () => {
 // Annotation tools: highlights
 ///////////////////////////////////////////////////////////////////////////
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: normalizeHighlights
+//  Inputs: annotations (the full annotations array)
+//  Outputs: A new annotations array in which no two highlights overlap and
+//    touching highlights of the same color are joined into one
+//  Summary: Where highlights overlap, the one created last wins (array order
+//    is creation order). Highlighting the same text twice therefore doesn't
+//    stack duplicates, and highlighting over another color replaces it. Notes
+//    and bookmarks are left alone.
+///////////////////////////////////////////////////////////////////////////
+function normalizeHighlights(annotations) {
+  const others = annotations.filter(a => a.type !== "highlight");
+
+  const byParagraph = new Map();
+  annotations.filter(a => a.type === "highlight").forEach(h => {
+    if (!byParagraph.has(h.paragraphId)) byParagraph.set(h.paragraphId, []);
+    byParagraph.get(h.paragraphId).push(h);
+  });
+
+  const result = [];
+  byParagraph.forEach((list, paragraphId) => {
+    const cuts = [...new Set(list.flatMap(h => [h.startOffset, h.endOffset]))].sort((a, b) => a - b);
+
+    let run = null;
+    const flush = () => {
+      if (run) {
+        result.push(run);
+        run = null;
+      }
+    };
+
+    for (let i = 0; i < cuts.length - 1; i++) {
+      const a = cuts[i];
+      const b = cuts[i + 1];
+
+      let winner = null;
+      for (let j = list.length - 1; j >= 0; j--) {
+        if (list[j].startOffset <= a && list[j].endOffset >= b) {
+          winner = list[j];
+          break;
+        }
+      }
+
+      if (!winner) {
+        flush();
+        continue;
+      }
+
+      const color = winner.color || "#ffff00";
+      if (run && run.endOffset === a && run.color.toLowerCase() === color.toLowerCase()) {
+        run.endOffset = b;
+      } else {
+        flush();
+        run = {
+          id: crypto.randomUUID(),
+          type: "highlight",
+          paragraphId,
+          startOffset: a,
+          endOffset: b,
+          color
+        };
+      }
+    }
+    flush();
+  });
+
+  return others.concat(result);
+}
+
 document.getElementById("highlight-color").addEventListener("input", (e) => {
   state.highlightColor = e.target.value;
 });
@@ -1911,23 +2327,39 @@ document.getElementById("btn-highlight").addEventListener("click", () => {
     addAnnotation("highlight", sel, { color: state.highlightColor });
   });
 
+  state.annotations = normalizeHighlights(state.annotations);
   renderDocument();
 });
 
+// Removes only the selected part of any highlight it overlaps: a highlight
+// that extends past the selection is cut down, not deleted.
 document.getElementById("btn-unhighlight").addEventListener("click", () => {
   if (currentSelections.length === 0) return;
 
   currentSelections.forEach(sel => {
-    state.annotations = state.annotations.filter(a => {
-      if (a.type !== "highlight") return true;
+    const next = [];
 
+    state.annotations.forEach(a => {
       const overlaps =
+        a.type === "highlight" &&
         a.paragraphId === sel.paragraphId &&
         a.startOffset < sel.endOffset &&
         a.endOffset > sel.startOffset;
 
-      return !overlaps;
+      if (!overlaps) {
+        next.push(a);
+        return;
+      }
+
+      if (a.startOffset < sel.startOffset) {
+        next.push({ ...a, endOffset: sel.startOffset });
+      }
+      if (a.endOffset > sel.endOffset) {
+        next.push({ ...a, id: crypto.randomUUID(), startOffset: sel.endOffset });
+      }
     });
+
+    state.annotations = next;
   });
 
   renderDocument();
@@ -2291,6 +2723,7 @@ onAuthChange((user) => {
     loadHomeScreen();
     if (pendingShareId) handleIncomingShare();
   } else {
+    closeReader(); // stops any AI run still going for the previous user
     showScreen("login");
   }
 });

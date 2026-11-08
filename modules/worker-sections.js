@@ -9,7 +9,7 @@
 //  Oliver Emerson - 2025-2026
 ///////////////////////////////////////////////////////////////////////////
 
-const WORKER_BASE_URL = "https://plain-band-2d43.oemerson8158.workers.dev";
+import { workerFetch } from "./api.js";
 
 const MAX_ATTEMPTS_PER_SECTION = 3;
 const MAX_WAIT_SECONDS = 90;    // longest single wait for the rate limit that we'll sit through
@@ -80,7 +80,7 @@ async function waitWithCountdown(seconds, buildText, shouldStop, setStatus) {
 //  Outputs, one of:
 //    { ok: true, data }                            — the worker's JSON
 //    { cancelled: true }                           — stopped, or the document changed
-//    { ok: false, tooLong: true }                  — section too big to send at all
+//    { ok: false, tooLong: true, message? }        — too big to send at all
 //    { ok: false, message, retryAfterSeconds? }    — failed; message is fit to show
 //  Summary: Sends one section. If the AI reports its per-minute limit, waits
 //    the time it asks for (with a countdown) and tries again.
@@ -104,11 +104,7 @@ async function sendWithRetry({
     let response;
     let data;
     try {
-      response = await fetch(`${WORKER_BASE_URL}${path}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
+      response = await workerFetch(path, body);
       data = await response.json();
     } catch (err) {
       console.error(`${path}: network error:`, err);
@@ -154,7 +150,11 @@ async function sendWithRetry({
     if (data.raw) console.error(`${path}: raw model output that failed to parse:`, data.raw);
 
     // The caller skips a too-big section rather than failing the whole run.
-    if (data.error === "too_long") return { ok: false, tooLong: true };
+    // The worker's message says how long the text was and what to try, which
+    // single-request callers (rephrase, summarize) show to the student.
+    if (data.error === "too_long") {
+      return { ok: false, tooLong: true, message: typeof data.message === "string" ? data.message : undefined };
+    }
 
     return {
       ok: false,

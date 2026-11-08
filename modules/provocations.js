@@ -18,12 +18,14 @@
 
 import { state, renderDocument } from "../app.js";
 import { splitIntoSections, requestWithRetry } from "./worker-sections.js";
-
-const WORKER_BASE_URL = "https://plain-band-2d43.oemerson8158.workers.dev";
+import { workerFetch } from "./api.js";
 
 // Roughly how much text goes to the AI per request. Anything up to this is
-// one request; longer readings are split into evenly-sized sections.
-const SECTION_MAX_CHARS = 14000;
+// one request; longer readings are split into evenly-sized sections. Kept
+// well under the worker's per-request token budget: the prompt itself (the
+// instructions for the chosen analysis focus) and the room reserved for the
+// answer also count against it.
+const SECTION_MAX_CHARS = 11000;
 
 // Generation state lives at module level so generation keeps going, and the
 // tab shows the right state, if the student switches tabs and back.
@@ -120,7 +122,7 @@ function renderDetail(prov) {
   detailEl.innerHTML = `
     <div class="prov-card">
       <p class="prov-question"><strong>Question:</strong> ${escapeHtml(prov.question)}</p>
-      <textarea id="prov-answer" rows="3">${prov.answer ? escapeHtml(prov.answer) : ""}</textarea>
+      <textarea id="prov-answer" rows="3" maxlength="3000">${prov.answer ? escapeHtml(prov.answer) : ""}</textarea>
       <div class="submit-row" style="justify-content: flex-start;">
         <button id="prov-submit" class="btn-primary">${alreadyAnswered ? "Submit new answer" : "Submit Answer"}</button>
       </div>
@@ -160,16 +162,12 @@ function renderDetail(prov) {
 
     let data;
     try {
-      const response = await fetch(`${WORKER_BASE_URL}/provocations/check`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          paragraph: state.chunks.find(c => c.id === prov.paragraphId)?.text || "",
-          purpose: state.purpose,
-          question: prov.question,
-          takeaway: prov.takeaway,
-          answer
-        })
+      const response = await workerFetch("/provocations/check", {
+        paragraph: state.chunks.find(c => c.id === prov.paragraphId)?.text || "",
+        purpose: state.purpose,
+        question: prov.question,
+        takeaway: prov.takeaway,
+        answer
       });
 
       data = await response.json();
@@ -287,12 +285,13 @@ async function requestSection(section, label, ctx) {
 ///////////////////////////////////////////////////////////////////////////
 //  Function: generateProvocations
 //  Inputs: None
-//  Outputs: Replaces state.provocations with newly generated ones and
-//    reports the outcome in the status line
-//  Summary: Sends the reading one section at a time. A run that finishes
-//    replaces the old provocations; a stopped or failed run keeps what it
-//    had collected. Asks for confirmation first if the student has answers
-//    that would be replaced.
+//  Outputs: Replaces state.provocations with newly generated ones, one
+//    section at a time, and reports the outcome in the status line
+//  Summary: Sends the reading one section at a time. As each section comes
+//    back, it replaces only the provocations of the paragraphs in that
+//    section, so a stopped or failed run leaves the sections it never
+//    reached exactly as they were, answers included. Asks for confirmation
+//    first if the student has answers that would be replaced.
 ///////////////////////////////////////////////////////////////////////////
 async function generateProvocations() {
   const startedWith = state.chunks;
@@ -302,8 +301,9 @@ async function generateProvocations() {
   const sections = splitIntoSections(startedWith, SECTION_MAX_CHARS);
   if (sections.length === 0) return;
 
+  const hadPrevious = state.provocations.length > 0;
   const hasAnswers = state.provocations.some(p => p.status === "correct" || p.status === "incorrect");
-  if (hasAnswers && !confirm("Generating new provocations replaces your current ones, including any answers you've written. Continue?")) {
+  if (hasAnswers && !confirm("Generating new provocations replaces your current ones, including any answers you've written, one section at a time as each finishes. If you stop partway, sections not yet reached keep their current provocations. Continue?")) {
     return;
   }
 
@@ -312,7 +312,7 @@ async function generateProvocations() {
   genState.forChunks = startedWith;
   syncGenerateButton();
 
-  const collected = [];
+  let added = 0;
   let skipped = 0;
   let failure = null;
   let stopped = false;
@@ -334,15 +334,18 @@ async function generateProvocations() {
       if (result.tooLong) { skipped++; continue; }
       if (!result.ok) { failure = result.message; break; }
 
-      collected.push(...result.provocations);
-      state.provocations = [...collected];
+      // Replace only this section's provocations. Built from the current
+      // state, so answers typed while the run is going aren't lost.
+      const sec = sections[i];
+      const sectionIds = new Set(
+        startedWith.slice(sec.startIndex, sec.startIndex + sec.paragraphs.length).map(c => c.id)
+      );
+      state.provocations = [
+        ...state.provocations.filter(p => !sectionIds.has(p.paragraphId)),
+        ...result.provocations
+      ].sort((a, b) => a.paragraphId - b.paragraphId);
+      added += result.provocations.length;
       renderDocument(); // show this section's icons right away
-    }
-
-    // A clean run replaces the old provocations even if it found none.
-    if (!stopped && !failure) {
-      state.provocations = [...collected];
-      renderDocument();
     }
   } finally {
     genState.running = false;
@@ -351,7 +354,8 @@ async function generateProvocations() {
 
   syncGenerateButton();
 
-  // Another document was opened meanwhile: don't report on it.
+  // Another document was opened (or the reader closed) meanwhile: don't
+  // report on it.
   if (isStale()) {
     setGenStatus("");
     return;
@@ -360,16 +364,17 @@ async function generateProvocations() {
   const n = state.provocations.length;
   const plural = n === 1 ? "" : "s";
   const note = skipped > 0
-    ? ` ${skipped} section${skipped === 1 ? " was" : "s were"} too large to read and skipped.`
+    ? ` ${skipped} section${skipped === 1 ? " was" : "s were"} too large to read and was left as it was.`
     : "";
+  const keptOld = hadPrevious ? " Sections it didn't reach keep their earlier provocations." : "";
 
   if (failure) {
-    const kept = collected.length > 0
-      ? ` Kept the ${collected.length} provocation${collected.length === 1 ? "" : "s"} generated so far.`
+    const kept = added > 0
+      ? ` Kept the ${added} new provocation${added === 1 ? "" : "s"} generated so far.`
       : "";
-    setGenStatus(`${failure}${kept}${note}`, true);
+    setGenStatus(`${failure}${kept}${keptOld}${note}`, true);
   } else if (stopped) {
-    setGenStatus(`Stopped. ${n} provocation${plural} ready so far — click a 💡 icon in the document to begin.`);
+    setGenStatus(`Stopped. ${n} provocation${plural} ready.${keptOld} Click a 💡 icon in the document to begin.`);
   } else if (n === 0) {
     setGenStatus(`Nothing in this reading stood out as worth a provocation.${note}`);
   } else if (note) {

@@ -8,8 +8,7 @@
 ///////////////////////////////////////////////////////////////////////////
 
 import { state } from "../app.js";
-
-const WORKER_BASE_URL = "https://plain-band-2d43.oemerson8158.workers.dev";
+import { requestWithRetry } from "./worker-sections.js";
 
 ///////////////////////////////////////////////////////////////////////////
 //  Function: addAnnotation
@@ -166,45 +165,56 @@ function loadAnnotationsUI() {
       return;
     }
 
-    const paragraphs = state.chunks.map(c => c.text);
+    // Only a short snippet of each paragraph the notes and responses refer to
+    // is needed for context, so that's all that is sent (the worker trims
+    // each to 350 characters; 400 lets it tell whether the paragraph was cut).
+    const snippets = {};
+    [...notes, ...provocationResponses].forEach(item => {
+      if (snippets[item.paragraphId] !== undefined) return;
+      const chunk = state.chunks.find(c => c.id === item.paragraphId);
+      snippets[item.paragraphId] = chunk ? chunk.text.slice(0, 400) : "";
+    });
+
+    const startedWith = state.chunks;
+    const isStale = () => state.chunks !== startedWith;
 
     summarizeBtn.disabled = true;
     const originalLabel = summarizeBtn.textContent;
     summarizeBtn.textContent = "Summarizing...";
 
-    let data;
+    // Goes through the shared queue, so it takes turns with lens and
+    // provocation requests instead of competing with them for the AI's
+    // per-minute budget.
+    let result;
     try {
-      const response = await fetch(`${WORKER_BASE_URL}/summarize`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paragraphs, notes, provocationResponses })
+      result = await requestWithRetry({
+        path: "/summarize",
+        body: { snippets, notes, provocationResponses },
+        label: "Summarizing...",
+        isStale,
+        shouldStop: isStale,
+        setStatus: text => { outputEl.textContent = text; },
+        fallbackMessage: "Couldn't generate a summary right now. Try again in a moment."
       });
-
-      data = await response.json();
-
-      if (!response.ok || data.error) {
-        console.error("SUMMARIZE: worker error:", data.error || data);
-        outputEl.innerHTML = "";
-        const errorP = document.createElement("p");
-        errorP.style.color = "#b00";
-        errorP.textContent = typeof data.message === "string"
-          ? data.message
-          : "Couldn't generate a summary right now. Try again in a moment.";
-        outputEl.appendChild(errorP);
-        return;
-      }
-    } catch (err) {
-      console.error("SUMMARIZE: network error:", err);
-      outputEl.innerHTML = `<p style="color:#b00;">Couldn't reach the server. Check your connection and try again.</p>`;
-      return;
     } finally {
       summarizeBtn.disabled = false;
       summarizeBtn.textContent = originalLabel;
     }
 
-    state.annotationsSummary = data.summary;
+    if (result.cancelled) return;
 
-    renderSummary(outputEl, data.summary);
+    outputEl.innerHTML = "";
+
+    if (!result.ok || typeof result.data?.summary !== "string") {
+      const errorP = document.createElement("p");
+      errorP.style.color = "#b00";
+      errorP.textContent = result.message || "Couldn't generate a summary right now. Try again in a moment.";
+      outputEl.appendChild(errorP);
+      return;
+    }
+
+    state.annotationsSummary = result.data.summary;
+    renderSummary(outputEl, result.data.summary);
   });
 }
 

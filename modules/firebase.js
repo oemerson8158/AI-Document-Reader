@@ -242,8 +242,22 @@ async function getShareRecord(shareId) {
   return { id: snap.id, ...snap.data() };
 }
 
+///////////////////////////////////////////////////////////////////////////
+//  Function: getIdToken
+//  Inputs: None
+//  Outputs: Promise<string> — a current ID token for the signed-in user
+//  Summary: Sent to the AI worker (see api.js), which verifies it. The SDK
+//    refreshes the token itself when it has expired.
+///////////////////////////////////////////////////////////////////////////
+function getIdToken() {
+  const user = auth.currentUser;
+  if (!user) return Promise.reject(new Error("Not signed in"));
+  return user.getIdToken();
+}
+
 export {
   auth,
+  getIdToken,
   signUpEmail,
   signInEmail,
   signInGoogle,

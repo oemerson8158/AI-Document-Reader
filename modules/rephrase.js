@@ -4,10 +4,14 @@
 //  a chosen Lexile level, optionally with an example, so complex passages
 //  are easier to understand without losing their meaning.
 //
+//  Requests go through the shared queue in worker-sections.js, so they take
+//  turns with lens and provocation requests instead of competing with them
+//  for the AI's per-minute budget.
+//
 //  Oliver Emerson - 2025-2026
 ///////////////////////////////////////////////////////////////////////////
 
-const WORKER_BASE_URL = "https://plain-band-2d43.oemerson8158.workers.dev";
+import { requestWithRetry } from "./worker-sections.js";
 
 ///////////////////////////////////////////////////////////////////////////
 //  Function: initRephraseUI
@@ -15,8 +19,8 @@ const WORKER_BASE_URL = "https://plain-band-2d43.oemerson8158.workers.dev";
 //    setResult(text) displays text in the output box
 //  Outputs: Wires up the Rephrase button
 //  Summary: On click, sends the selected paragraphs to the worker and shows
-//    the result. The button is disabled while a request is running, since
-//    rapid clicks would each spend part of the AI's shared per-minute budget.
+//    the result. The button is disabled while a request is running. Queue
+//    and rate-limit waits are shown in the output box as they happen.
 ///////////////////////////////////////////////////////////////////////////
 function initRephraseUI({ getState, setResult }) {
   const submitBtn = document.getElementById("rephrase-submit");
@@ -41,9 +45,15 @@ function initRephraseUI({ getState, setResult }) {
     const originalLabel = submitBtn.textContent;
     submitBtn.textContent = "Rephrasing...";
 
+    // A different document was opened (or the reader closed) meanwhile.
+    const startedWith = state.chunks;
+    const isStale = () => getState().chunks !== startedWith;
+
     try {
-      const result = await runRephrase({ paragraphs, lexile, includeExample });
-      setResult(result || "Couldn't rephrase that right now. Check your connection and try again.");
+      const result = await runRephrase({ paragraphs, lexile, includeExample, isStale, setStatus: setResult });
+      if (result !== null) {
+        setResult(result || "Couldn't rephrase that right now. Check your connection and try again.");
+      }
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = originalLabel;
@@ -53,35 +63,35 @@ function initRephraseUI({ getState, setResult }) {
 
 ///////////////////////////////////////////////////////////////////////////
 //  Function: runRephrase
-//  Inputs: { paragraphs, lexile, includeExample }
-//  Outputs: Promise<string> — the rephrased text, or a message for the
-//    student; an empty string if the request failed
-//  Summary: Calls the worker's /rephrase route. The worker supplies a plain-
-//    English `message` for problems the student can act on (selection too
-//    long, AI busy), which is returned in place of a result.
+//  Inputs: { paragraphs, lexile, includeExample, isStale, setStatus }
+//  Outputs: Promise<string | null> — the rephrased text, or a message for
+//    the student; "" if the request failed without a message; null if the
+//    document changed and there's nothing to show
+//  Summary: Calls the worker's /rephrase route through the request queue.
+//    The worker supplies a plain-English `message` for problems the student
+//    can act on (selection too long, AI busy), which is returned in place of
+//    a result.
 ///////////////////////////////////////////////////////////////////////////
-async function runRephrase({ paragraphs, lexile, includeExample }) {
-  let data;
-  try {
-    const response = await fetch(`${WORKER_BASE_URL}/rephrase`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paragraphs, lexile, includeExample })
-    });
-    data = await response.json();
-  } catch (err) {
-    console.error("REPHRASE: request failed or returned non-JSON:", err);
+async function runRephrase({ paragraphs, lexile, includeExample, isStale, setStatus }) {
+  const result = await requestWithRetry({
+    path: "/rephrase",
+    body: { paragraphs, lexile, includeExample },
+    label: "Rephrasing...",
+    isStale,
+    shouldStop: isStale,
+    setStatus,
+    fallbackMessage: "Couldn't rephrase that right now. Check your connection and try again."
+  });
+
+  if (result.cancelled) return null;
+  if (!result.ok) return result.message || "";
+
+  if (typeof result.data?.result !== "string") {
+    console.error("REPHRASE: invalid worker result format:", result.data);
     return "";
   }
 
-  if (data && typeof data.message === "string") return data.message;
-
-  if (!data || typeof data.result !== "string") {
-    console.error("REPHRASE: invalid worker result format:", data);
-    return "";
-  }
-
-  return data.result;
+  return result.data.result;
 }
 
 export { initRephraseUI };
